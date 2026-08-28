@@ -289,126 +289,56 @@ The CRT heap is the whole guest arena: object at `0x011806B0`, base from
 `*(0x01180730)`, size `*(0x01180734)` = `0x0AE00000` — 174 MB, which is exactly
 what `cellGcmMapMainMemory(0x20000000, 0xAE00000)` maps.
 
-### Two Allocators, One Address
+### The Allocator Is Fine, and So Is the Table
 
-The pool at `0x010E3760` owns a single allocation split in two: a page-allocator
-object at `0x200063D0` and a 20-entry, 80-byte-stride size-class array at
-`0x20006458` (`pool[+0x08]` and `pool[+0x0C]`).
+`scripts/instrument_alloc.py` wraps a lifted function in place so its arguments
+and return value can be logged. That tool was the missing piece all along: the
+runtime's dispatch-table override only intercepts *indirect* calls, and a `bl`
+in lifted code calls `func_XXXXXXXX` directly and never looks the address up.
+The wrapper has to go in beside the definition, in the generated source.
 
-The second writer walks **that same array, with that same 80-byte stride**,
-writing two words per entry. It is not a bulk memset overrunning its bounds —
-it is a second allocator structure of identical shape being built at the same
-address, from the 1 MB heap that `func_009BFEF8` creates inside `main`.
-
-So two allocator instances occupy the same memory, and the question is which
-allocation is wrong.
-
-**Next step, precisely:** both structures are carved by `func_0094FF30`, the CRT
-heap's block allocator. Log `(heap, size, returned address)` for every call and
-find the two returns whose ranges overlap. One function, one log, one answer.
-
-Ruled out along the way, each of which was a plausible suspect:
-
-- **Not an unresolved import** — `in_hle` is empty and no NID on the boot path
-  is unimplemented.
-- **Not the reservation logic** — `PPU_RESV_OFF=1`, which turns `stwcx.` into a
-  plain compare-and-swap, changes nothing.
-- **Not a mis-lifted index** — the `rlwinm` chain that computes the size class
-  and the 80-byte stride was checked instruction by instruction against the
-  generated C.
-- **Not a missing function** — the one hole the runtime reported
-  (`0x00683A48`) is seeded and gone.
-
-`ctx->lr` is worth a warning: the lifter writes it only before a `bl`, so a
-function reached by a tail branch, or looping without calling anything, leaves
-it pointing at whatever came before. It named the wrong frame for an hour. The
-host unwind is what settled it.
-
-### Graphics
-
-`src/gt5p_present.cpp` opens the window and runs the 60 Hz ticker — a port with
-its own `main()` gets neither for free. Without it `cellGcmTickFlip` never runs,
-so a title that flips waits forever and the FIFO is never drained.
-
-`GCM_DRAINDBG=1` shows exactly how far the guest gets:
+With `func_0094FF30` — the CRT heap's block allocator — wrapped, and
+`src/gt5p_allocwatch.cpp` checking every returned range against every previous
+one:
 
 ```
-[DRAIN] getoff=00000000 put=00010040 ref=00000000 ctx.current=40000004
-[DRAIN] getoff=00010040 put=00010040 ref=00000000 ctx.current=40000004   (x94, unchanged)
+[alloc] #42 func_0094FF30(heap=0x011806B0 size=0x400000 align=4096) -> 0x2A9BF000
+[alloc] #43 func_0094FF30(heap=0x011806B0 size=0x70    align=16)   -> 0x200063D0
+[alloc] #44 func_0094FF30(heap=0x011806B0 size=0x648   align=16)   -> 0x20006450
+[alloc] #45 func_0094FF30(heap=0x011806B0 size=0x200000 align=4096) -> 0x2A7BE000
 ```
 
-One 64 KB command buffer written during init, drained, and then `put` never moves
-again. `CELLMARK_DUMP=4` captures no frames, because the guest never requests a
-flip. The graphics path is not the problem yet — nothing is being asked of it.
+495 allocations, all sane. The pool's page-allocator object (#43) and its
+size-class array (#44, `0x648` = 1608 bytes = 20×80+8) are **uniquely owned** —
+nothing else is handed that memory. The overlaps the detector does flag are
+sub-heaps nesting inside blocks they legitimately own (#48–#52 inside #42 and
+#35) and repeated returns of a small block, which the detector calls an overlap
+only because it does not track frees.
 
-### What Unblocked It
-
-Two missing pieces in ps3recomp's `cellSpurs`, both of which made the title hang
-with nothing in the log to say why:
-
-- **`cellSpursCreateJobChain` had no implementation.** Only the `WithAttribute`
-  form existed, so the plain form fell through to the unresolved-NID path, faked
-  `CELL_OK`, and registered nothing. The chain did not exist as far as the
-  runtime was concerned.
-- **`cellSpursKickJobChain` was a no-op** — and declared `(spurs, jobChain)` when
-  it is `(jobChain, numReadyCount)`. It is the *other* way a title starts a
-  chain: `Run` for one created ready to go, `Kick` to hand the SPUs more of an
-  existing one. This title uses Create + Kick, so its chains were created and
-  then never walked.
-
-Both are fixed in [ps3recomp#98](https://github.com/sp00nznet/ps3recomp/pull/98),
-which this port currently requires.
-
-With the chain walking, eleven distinct SPU job binaries showed up as
-`[spurs-job] dispatch MISS` — captured with `SPU_DUMP_MISS`, lifted, and
-registered by `scripts/lift_spu_jobs.py`:
+The table is right too. Wrapping `func_008AF2C8`, the per-entry initialiser:
 
 ```
-spujob_1F4DFFB8347F469B_9440    198 functions
-spujob_2700D2E254DC9B26_19216   332
-spujob_50B204D2E7F341C3_69152   546
-spujob_95895166008B201A_25344   419
-spujob_96888A5FD8A35332_53648     1   <-- almost certainly wrong
-spujob_BE66D8D2210CDCD4_36448   691
-spujob_CDC79000AF23EFEA_24816   414
-spujob_CF6687DDC3CEB944_17200   298
-spujob_F13517B6BAAB5638_20448   355
-spujob_FE904C090B0D0DFE_13840   251
-spujob_FF5E29441A480DBC_53296   630
+[alloc] #45 func_008AF2C8(entry=0x20006458 owner=0x010E3760 size=4)
+[alloc] #50 func_008AF2C8(entry=0x200065E8 owner=0x010E3760 size=24)
+[alloc] #58 func_008AF2C8(entry=0x20006868 owner=0x010E3760 size=56)
 ```
 
-4,135 SPU functions across the eleven, plus 193 in the policy module. Zero
-dispatch misses on the next run.
+Once per entry, `size = (i+1)*4`, entry[5] getting exactly the `0x18` it should.
+So `{owner, size}` are correct at construction and something overwrites them
+later.
 
-### Where It Is Now
+**A correction to the previous round.** The page guard captures the writing
+routine's registers *mid-function*, not at entry, so reading them as arguments
+was wrong. `func_009DA12C`'s real arguments are `(stack_ptr, 1, 0x40000000)` and
+it is called exactly once — it is not "a 1 MB, 64 KB-aligned arena setup". Those
+were reused registers.
 
-The boot went from 293 log lines to 3.8 million. It runs a steady job loop —
-two jobs dispatched over and over — with fifteen guest threads alive, audio
-initialised, and `cellSysutil`'s disc-game registration done. What it does *not*
-do is load anything: the only file it has ever opened is `PARAM.SFO`.
-
-Two of the eleven lifted job images are visibly not right, and are the obvious
-next thing to look at:
-
-- **`j96888A5F`** lifted **1 function from 53,648 bytes**. `find_spu_functions`
-  found no seeds it trusted, so almost all of that image is unlifted.
-- **`jBE66D8D2`** issues MFC transfers to garbage effective addresses
-  (`0x7801C102`, `0x2502C081`), which the runtime rejects as malformed. Its
-  lifted code is computing addresses wrong somewhere.
-
-One hole in the function list was found and closed: the runtime reported
-`[ppu] unresolved indirect call -> 0x00683A48` from the main thread, and
-`0x006839F8..0x00683AF8` — a jump-table dispatcher and its cases — was missing
-from `find_functions`' output entirely. `config/extra_seeds.json` feeds those
-addresses back in via `--seed-json`. **Honest result: it fixes nothing
-observable.** The unresolved call is gone and the title behaves identically. It
-is kept because a `bctrl` into unlifted code is a real defect whether or not it
-was load-bearing, and because the runtime will name the next one the same way.
-
-Also outstanding, but not what is blocking: `cellSpursShutdownJobChain`,
-`cellKbInit`/`SetReadMode`/`SetCodeType` and `cellMouseInit` are unresolved
-NIDs, and WASAPI refuses the 8-channel format the title asks for
-(`AUDCLNT_E_UNSUPPORTED_FORMAT`), so audio initialises but has no output device.
+**Next step, precisely:** the pool global at `0x010E3760` still points at block
+#44 long after construction, and that block reads as `-1`. The remaining
+explanation that fits every measurement is **use-after-free** — the block is
+freed and recycled, and its new owner fills it. Wrap the CRT `free` (the
+counterpart of `func_0094FF30`) and check whether `0x20006450` is ever handed
+back.
 
 ### The Fingerprint Is Not FNV-1a-64
 
