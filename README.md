@@ -28,16 +28,14 @@ RSX pipeline built by the studio that cared most about it, and Polyphony's own
 packed filesystem holding 1.8 GB of assets. Tokyo Jungle, the previous most
 complex target, is 7,924 functions.
 
-## Status: Phase 8 — It Boots and SPU Code Runs
+## Status: Phase 9 — Job Chains Run, 12 SPU Images Live
 
-> It builds and it runs. A 70 MB native x86-64 executable loads the game's own
-> ELF, runs its CRT, brings up SPURS across five SPUs, initialises `cellGcmSys`,
-> configures video out at 1280×720, registers its tiles, zcull and display
-> buffers — and runs the title's own SPU code: the WWS job manager policy module,
-> lifted from the ELF, executes and DMAs its workload descriptor out of main
-> memory. It then parks in a 20 ms poll loop. No crash, no exit, and no
-> unimplemented NID hit on the way. It has not drawn a pixel or opened a game
-> file.
+> The title's SPURS job chains now run. Twelve SPU images are lifted and
+> registered — the WWS job manager policy module plus eleven job binaries — and
+> **every dispatch hits**, around 500,000 of them in 90 seconds. Downstream of
+> that the boot woke up: fifteen guest threads, `cellAudio` initialised with its
+> mixing thread running, `cellPad` up, and the first file the title has ever
+> asked for opened and read. It still has not drawn a pixel or loaded an asset.
 
 | Milestone | Status |
 |-----------|--------|
@@ -51,12 +49,13 @@ complex target, is 7,924 functions.
 | ELF loading & VM setup | **Done** — segments, PT_TLS, OPD entry, fault-commit |
 | CRT initialisation | **Done** — TLS block, `r13`, argv/envp |
 | LV2 syscall dispatch | **Done** — full table, 5 guest threads run |
-| SPU lifting (`Wws_Job` policy module) | **Done** — 193 functions, resolves and executes |
-| SPURS bring-up | **Partial** — PM runs and DMAs; no job chain completes yet |
+| SPU lifting | **Done** — 12 images, 4,328 functions, zero dispatch misses |
+| SPURS job chains | **Done** — created, kicked, walked, completion signalled |
+| Audio (`cellAudio` → WASAPI) | **Partial** — pipeline up, mixing thread runs, no output device |
+| Input (`cellPad` → XInput) | **Partial** — `cellPadInit` reached |
+| Filesystem | **Partial** — `PARAM.SFO` opens and reads; no asset loads yet |
 | Graphics (RSX → D3D12) | **Partial** — GCM init, 1280×720, tiles/zcull/buffers; nothing drawn |
-| Audio (`cellAudio` → WASAPI) | Not started |
-| Input (`cellPad` → XInput) | Not started |
-| PDIPFS asset loading | Not started — the title has not opened a file yet |
+| PDIPFS asset loading | Not started |
 
 ### What the Binary Looks Like
 
@@ -163,6 +162,66 @@ boot path did not reach past them. And **no file was opened**: the title has not
 asked for a single byte of its 1.8 GB of assets yet, which places the stall
 before any content loading, not inside it.
 
+### What Unblocked It
+
+Two missing pieces in ps3recomp's `cellSpurs`, both of which made the title hang
+with nothing in the log to say why:
+
+- **`cellSpursCreateJobChain` had no implementation.** Only the `WithAttribute`
+  form existed, so the plain form fell through to the unresolved-NID path, faked
+  `CELL_OK`, and registered nothing. The chain did not exist as far as the
+  runtime was concerned.
+- **`cellSpursKickJobChain` was a no-op** — and declared `(spurs, jobChain)` when
+  it is `(jobChain, numReadyCount)`. It is the *other* way a title starts a
+  chain: `Run` for one created ready to go, `Kick` to hand the SPUs more of an
+  existing one. This title uses Create + Kick, so its chains were created and
+  then never walked.
+
+Both are fixed in [ps3recomp#98](https://github.com/sp00nznet/ps3recomp/pull/98),
+which this port currently requires.
+
+With the chain walking, eleven distinct SPU job binaries showed up as
+`[spurs-job] dispatch MISS` — captured with `SPU_DUMP_MISS`, lifted, and
+registered by `scripts/lift_spu_jobs.py`:
+
+```
+spujob_1F4DFFB8347F469B_9440    198 functions
+spujob_2700D2E254DC9B26_19216   332
+spujob_50B204D2E7F341C3_69152   546
+spujob_95895166008B201A_25344   419
+spujob_96888A5FD8A35332_53648     1   <-- almost certainly wrong
+spujob_BE66D8D2210CDCD4_36448   691
+spujob_CDC79000AF23EFEA_24816   414
+spujob_CF6687DDC3CEB944_17200   298
+spujob_F13517B6BAAB5638_20448   355
+spujob_FE904C090B0D0DFE_13840   251
+spujob_FF5E29441A480DBC_53296   630
+```
+
+4,135 SPU functions across the eleven, plus 193 in the policy module. Zero
+dispatch misses on the next run.
+
+### Where It Is Now
+
+The boot went from 293 log lines to 3.8 million. It runs a steady job loop —
+two jobs dispatched over and over — with fifteen guest threads alive, audio
+initialised, and `cellSysutil`'s disc-game registration done. What it does *not*
+do is load anything: the only file it has ever opened is `PARAM.SFO`.
+
+Two of the eleven lifted job images are visibly not right, and are the obvious
+next thing to look at:
+
+- **`j96888A5F`** lifted **1 function from 53,648 bytes**. `find_spu_functions`
+  found no seeds it trusted, so almost all of that image is unlifted.
+- **`jBE66D8D2`** issues MFC transfers to garbage effective addresses
+  (`0x7801C102`, `0x2502C081`), which the runtime rejects as malformed. Its
+  lifted code is computing addresses wrong somewhere.
+
+Also outstanding, but not what is blocking: `cellSpursShutdownJobChain`,
+`cellKbInit`/`SetReadMode`/`SetCodeType` and `cellMouseInit` are unresolved
+NIDs, and WASAPI refuses the 8-channel format the title asks for
+(`AUDCLNT_E_UNSUPPORTED_FORMAT`), so audio initialises but has no output device.
+
 ### The Fingerprint Is Not FNV-1a-64
 
 Registering a lifted SPU image means matching it by content hash, and the obvious
@@ -251,7 +310,10 @@ Native x86-64 executable
 ### Prerequisites
 
 - **Python** 3.10+ and `pip install -r requirements.txt`
-- **ps3recomp** — clone from [sp00nznet/ps3recomp](https://github.com/sp00nznet/ps3recomp)
+- **ps3recomp** — clone from [sp00nznet/ps3recomp](https://github.com/sp00nznet/ps3recomp).
+  Currently needs [#98](https://github.com/sp00nznet/ps3recomp/pull/98) (SPURS
+  job chains) and [#97](https://github.com/sp00nznet/ps3recomp/pull/97)
+  (`pkg_extract` directory tree).
 - **ps3sce** (or scetool) for the SELF segment decrypt
 - **A legitimate copy of Gran Turismo 5 Prologue** (NPUA80075) — the PSN package
   and its RAP. You must legally own the game; nothing here is included.
@@ -285,6 +347,12 @@ scripts/build.cmd
 
 # 6. Run
 ./build/gt5p.exe
+
+# 7. Capture and lift any SPU job image the runtime does not recognise,
+#    then rebuild. Repeat until no `dispatch MISS` remains.
+SPU_DUMP_MISS=analysis/spu/dump ./build/gt5p.exe
+python scripts/lift_spu_jobs.py
+scripts/build.cmd
 ```
 
 `scripts/build.cmd` sources `vcvars64.bat`, then configures and builds. The
@@ -319,13 +387,15 @@ GT5P/
 │   ├── self_metainfo.py     # RAP -> klicensee -> decrypted SELF metadata info
 │   ├── decrypt_self.py      # pure-Python SELF decryptor (key path validated)
 │   ├── gen_hle_stubs.py     # ELF import descriptors -> lifter --hle-stubs map
+│   ├── lift_spu_jobs.py     # captured SPU job images -> lifted + registered
 │   └── build.cmd            # vcvars64 + cmake + ninja
 ├── src/
 │   ├── main.cpp             # VM bring-up, ELF load, entry
 │   ├── elf_loader.h         # PT_LOAD / PT_TLS / OPD entry
 │   ├── compat/              # <dirent.h>/<unistd.h> shims for ppu_fs.cpp on Win32
 │   └── gen/
-│       └── ppu_hle_nids.cpp # generated: 487 NID -> ps3recomp handler registrations
+│       ├── ppu_hle_nids.cpp # generated: 488 NID -> ps3recomp handler registrations
+│       └── spu_workloads.c  # generated: 12 SPU images -> fingerprint registrations
 ├── CMakeLists.txt
 ├── input/                   # Your game files go here (gitignored)
 ├── analysis/                # Derived from the binary — regenerate, don't commit (gitignored)
@@ -338,9 +408,11 @@ GT5P/
 
 Early days, and the biggest jobs have not started:
 
-- **Why no job is ever claimed** — the job manager runs, reads its descriptor and
-  finds nothing to do, and the boot never gets past its 20 ms poll. Working out
-  what should be queuing work is the current blocker.
+- **The two bad SPU images** — `j96888A5F` (1 function lifted from 53 KB) and
+  `jBE66D8D2` (malformed MFC addresses). Described above; the most likely reason
+  the title runs a job loop without ever loading anything.
+- **Why nothing is loaded** — 1.8 GB of assets in `USRDIR/PDIPFS` and the title
+  has opened exactly one file.
 - **Four VMX instructions** — `stvrx`, `stvlx`, `vsumsws`, `vsum4sbs`. 72 sites,
   and the only gap in an otherwise complete lift.
 - **RSX graphics** — GT5P at 1080p on 2006 hardware means an aggressively tuned
