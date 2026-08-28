@@ -206,9 +206,20 @@ write to `entry+8` is a real pointer, `0x20097900`. So `-1` looks like an
 "insertion in progress" sentinel, and the failure is a **reader following it**:
 `func_008B0920` takes the entry's own lock at `entry+32` (`func_00938DA0`)
 before touching the head, so on hardware nobody can observe the sentinel. That
-makes the per-entry lock the next thing to check — if it is not actually
-excluding under our threading, this is a race, not a logic bug, which would also
-explain why the boot gets *this* far and no further.
+makes the per-entry lock a suspect — but not the only one.
+
+Narrowing further: the head store is not in `func_008B0818` at all. It calls
+`func_008AF340` (unlink) and `func_008AF308` (link) to move a chunk to the front
+of the list, and the store watch attributes their inlined bodies to the caller.
+An unlink that empties the list should write `0` — the reader's only test is
+`head == 0`. Writing `-1` means the last node's *next* field is `-1` rather than
+`0`, which points at the chunk initialiser `func_008AF1B8` or at the splice
+itself.
+
+**Next step, precisely:** diff the disassembly of `func_008AF1B8`,
+`func_008AF308` and `func_008AF340` against their lifted C. A carry- or
+compare-dependent instruction lifted wrongly is exactly how `0` becomes `-1`,
+and this title reaches that path within seconds of every boot.
 
 Ruled out along the way, each of which was a plausible suspect:
 
