@@ -62,6 +62,11 @@ int  ppu_stwcx32(uint64_t ea, uint32_t expected, uint32_t val);
 void ps3_indirect_call(ppu_context* ctx);
 void ps3_hle_call(unsigned nid, ppu_context* ctx);
 uint8_t vm_read8(uint64_t addr);
+void ppu_guard_page(uint32_t guest_ea);
+void vm_write64(uint64_t a, uint64_t v);
+void vm_write8(uint64_t a, uint8_t v);
+void vm_write16(uint64_t a, uint16_t v);
+uint64_t vm_read64(uint64_t a);
 extern const char* g_hle_inflight[64];    /* per-thread: HLE currently executing */
 void gt5p_spu_register_all(void);         /* generated: src/gen/spu_workloads.c */
 void gt5p_start_present_thread(void);     /* src/gt5p_present.cpp */
@@ -122,6 +127,61 @@ static uint32_t enclosing_func(uint32_t addr)
 
 static HANDLE g_main_thread;
 static uintptr_t g_last_rip;
+static void dump_hostmap(void);
+
+/* GT5P_GUARD=<watch>:<arm>: spin until the guest word at <arm> becomes
+ * non-zero, then write-protect <watch>'s page so the runtime's guard handler
+ * reports every writer into it.
+ *
+ * The store watch (LBP_WW) only sees lifted vm_write8/16/32. A 64-bit `std`,
+ * an atomic, or a host-side memset lands invisibly -- and this title has a
+ * free-list entry whose fields are zeroed at init and read back as -1 with no
+ * store in between, which is exactly that shape. */
+static DWORD WINAPI guard_arm(LPVOID spec)
+{
+    uint32_t watch = 0, arm = 0, want = 0;
+    int n = sscanf((const char*)spec, "%x:%x:%x", &watch, &arm, &want);
+    if (n < 2 || !watch) return 0;
+    for (int i = 0; i < 60000 && arm; i++) {
+        uint32_t v = vm_read32(arm);
+        if (n >= 3 ? (v == want) : (v != 0)) break;
+        Sleep(1);
+    }
+    fprintf(stderr, "[GT5P] arming page guard on 0x%08X ([0x%08X]=0x%08X)\n",
+            watch, arm, vm_read32(arm));
+    dump_hostmap();
+    fflush(stderr);
+    ppu_guard_page(watch);
+    return 0;
+}
+
+/* The page guard reports a writer as a module RVA. Print the RVAs of the
+ * runtime entry points a guest store can plausibly come through, so the nearest
+ * one below it names the writer without a symbol server. RVAs move between
+ * builds, so this has to come from the same run as the guard output. */
+static void dump_hostmap(void)
+{
+    {
+        char* mb = (char*)GetModuleHandleA(nullptr);
+        struct { const char* n; void* p; } k[] = {
+            { "vm_write32",     (void*)&vm_write32     },
+            { "vm_read32",      (void*)&vm_read32      },
+            { "ppu_stwcx32",    (void*)&ppu_stwcx32    },
+            { "ps3_hle_call",   (void*)&ps3_hle_call   },
+            { "ps3_indirect",   (void*)&ps3_indirect_call },
+            { "ppu_guard_page", (void*)&ppu_guard_page },
+            { "vm_write8",      (void*)&vm_write8      },
+            { "vm_write16",     (void*)&vm_write16     },
+            { "vm_write64",     (void*)&vm_write64     },
+            { "vm_read64",      (void*)&vm_read64      },
+            { "ppu_register_fn",(void*)&ppu_register_function },
+        };
+        for (auto& e : k)
+            fprintf(stderr, "[hostmap] %-14s rva=0x%llX\n", e.n,
+                    (unsigned long long)((char*)e.p - mb));
+    }
+    fflush(stderr);
+}
 
 static DWORD WINAPI main_stack_dump(LPVOID secs)
 {
@@ -197,6 +257,16 @@ static DWORD WINAPI main_stack_dump(LPVOID secs)
                 fprintf(stderr, "[peek] %08X:", a);
                 for (int k = 0; k < 8; k++)
                     fprintf(stderr, " %08X", vm_read32(a + (uint32_t)k * 4));
+                /* The same words straight out of the mapping, bypassing
+                 * vm_read32 and its instrumentation. If these two lines
+                 * disagree, the accessor is lying — and the guest reads the
+                 * same lie. */
+                fprintf(stderr, "\n[peek] %08X raw:", a);
+                for (int k = 0; k < 8; k++) {
+                    uint32_t w;
+                    memcpy(&w, vm_base + a + (uint32_t)k * 4, 4);
+                    fprintf(stderr, " %08X", _byteswap_ulong(w));
+                }
                 fputc('\n', stderr);
                 a = vm_read32(a);
             }
@@ -373,6 +443,8 @@ int main(int argc, char* argv[])
                    : "/app_home/USRDIR/EBOOT.BIN");
 
 #ifdef _WIN32
+    if (getenv("GT5P_HOSTMAP")) dump_hostmap();
+
     if (const char* secs = getenv("GT5P_MAINSTACK")) {
         DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
                         GetCurrentProcess(), &g_main_thread,
@@ -380,6 +452,11 @@ int main(int argc, char* argv[])
         CreateThread(nullptr, 0, main_stack_dump,
                      (LPVOID)(intptr_t)atoi(secs), 0, nullptr);
     }
+#endif
+
+#ifdef _WIN32
+    if (char* g = getenv("GT5P_GUARD"))
+        CreateThread(nullptr, 0, guard_arm, g, 0, nullptr);
 #endif
 
     gt5p_start_present_thread();

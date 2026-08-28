@@ -216,10 +216,47 @@ An unlink that empties the list should write `0` — the reader's only test is
 `0`, which points at the chunk initialiser `func_008AF1B8` or at the splice
 itself.
 
-**Next step, precisely:** diff the disassembly of `func_008AF1B8`,
-`func_008AF308` and `func_008AF340` against their lifted C. A carry- or
-compare-dependent instruction lifted wrongly is exactly how `0` becomes `-1`,
-and this title reaches that path within seconds of every boot.
+Those three were checked and are lifted faithfully — `func_008AF1B8` zeroes the
+node's `prev`/`next` correctly, and the splice reads clean. The corruption is
+elsewhere, and it is bigger than one word.
+
+**The entry itself is wrong.** Read at steady state, and confirmed against raw
+memory (`GT5P_PEEK` prints both `vm_read32` and the mapping directly — they
+agree, so the accessor is not lying):
+
+```
+entry[5] @ 0x200065E8   owner=FFFFFFFF  size=FFFFFFFF  head=20097900  tail=FFFFFFFF
+                        cache=00000000  count=00000001  max=FFFFFFFF  total=0243E79A
+```
+
+`owner` should be the pool (`0x010E3760`) and `size` should be `0x18`. Both are
+written at init — the store watch sees `0x200065EC <- 0x18` and
+`0x200065E8 <- 0x010E3760` — and both are `-1` a second later.
+
+That is what drives the livelock: `func_008B0920`'s only test is
+`[entry+4] == 0`, meaning "this size class is unused, fall back to the general
+allocator". With `size` reading `-1` it *never* takes that branch, and instead
+pops from a free list whose links are garbage.
+
+Armed at the exact instant of the init store
+(`LBP_WW=0x200065E8 PPU_WW_GUARD=1`), the page guard names two writers of that
+word: one through `vm_write32` — a normal lifted 32-bit store, but the guard
+reports the faulting RIP inside the accessor, so the *guest* caller is not
+identified — and one from inside the lifted body of `func_00494F70`.
+
+Ruled out this round, each cheaply and definitively:
+
+- **Not SPU DMA.** `PS3_NO_JOBCHAIN=1` stops every job and reproduces exactly.
+- **Not a faked-OK import.** `PS3_HLE_UNRESOLVED=fail` reproduces exactly.
+- **Not dropped writes.** `ppu_vm_size` is 0, so the bounds check is disabled and
+  nothing is being silently discarded.
+- **Not the `ydkj_memmove` body override** — it is env-gated and off.
+
+**Next step, precisely:** the page guard reports the faulting RIP, which for any
+store through `vm_write32` is inside the accessor. Teaching it to resolve the
+*guest caller* (the runtime already does this for `LBP_WW` via
+`ppu_prof_resolve_host(__builtin_return_address(0))`) would name the store on
+the first hit. That is a handful of lines in `ppu_guard_page`'s handler.
 
 Ruled out along the way, each of which was a plausible suspect:
 
