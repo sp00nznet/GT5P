@@ -43,7 +43,7 @@ complex target, is 7,924 functions.
 | SELF decryption (`EBOOT.BIN`, `EMAIN.SELF`) | **Done** — RAP-derived, validated against a known-good control |
 | ELF analysis & import resolution | **Done** — 439 imports, 291 NIDs resolved (66%) |
 | Function boundary detection | **Done** — 40,476 found, 38,598 in executable sections |
-| PPU code lifting | **Done** — 39,657 functions, 3.4M lines, 72 instructions unlifted |
+| PPU code lifting | **Done** — 39,660 functions, 3.4M lines, 72 instructions unlifted |
 | Import resolution (NID) | **Done** — all 439 thunks lifted as `ps3_hle_call`, nothing patched at load |
 | Project scaffold & build system | **Done** — clang-cl + Ninja, 70 MB executable |
 | ELF loading & VM setup | **Done** — segments, PT_TLS, OPD entry, fault-commit |
@@ -217,6 +217,15 @@ next thing to look at:
   (`0x7801C102`, `0x2502C081`), which the runtime rejects as malformed. Its
   lifted code is computing addresses wrong somewhere.
 
+One hole in the function list was found and closed: the runtime reported
+`[ppu] unresolved indirect call -> 0x00683A48` from the main thread, and
+`0x006839F8..0x00683AF8` — a jump-table dispatcher and its cases — was missing
+from `find_functions`' output entirely. `config/extra_seeds.json` feeds those
+addresses back in via `--seed-json`. **Honest result: it fixes nothing
+observable.** The unresolved call is gone and the title behaves identically. It
+is kept because a `bctrl` into unlifted code is a real defect whether or not it
+was load-bearing, and because the runtime will name the next one the same way.
+
 Also outstanding, but not what is blocking: `cellSpursShutdownJobChain`,
 `cellKbInit`/`SetReadMode`/`SetCodeType` and `cellMouseInit` are unresolved
 NIDs, and WASAPI refuses the 8-channel format the title asks for
@@ -330,7 +339,7 @@ ps3sce -m $MI -d input/pkg/USRDIR/EMAIN.SELF input/EMAIN.ELF
 
 # 3. Analyse
 python /path/to/ps3recomp/tools/elf_parser.py     input/EMAIN.ELF --imports > analysis/imports.json
-python /path/to/ps3recomp/tools/find_functions.py input/EMAIN.ELF --json --output analysis/functions.json
+python /path/to/ps3recomp/tools/find_functions.py input/EMAIN.ELF --json     --seed-json config/extra_seeds.json --output analysis/functions.json
 
 # 4. Drop the .rodata that find_functions mistook for code, then lift
 python -c "import json; f=json.load(open('analysis/functions.json'));   json.dump([x for x in f if int(x['start'],16) < 0xBE0AF4],             open('analysis/functions_code.json','w'))"
@@ -382,7 +391,8 @@ This port targets the **US PSN build, NPUA80075 v02.00** (`PS3_SYSTEM_VER 02.150
 ```
 GT5P/
 ├── config/
-│   └── gt5p.toml            # ps3recomp configuration
+│   ├── gt5p.toml            # ps3recomp configuration
+│   └── extra_seeds.json     # function starts find_functions missed, seen at runtime
 ├── scripts/
 │   ├── self_metainfo.py     # RAP -> klicensee -> decrypted SELF metadata info
 │   ├── decrypt_self.py      # pure-Python SELF decryptor (key path validated)
