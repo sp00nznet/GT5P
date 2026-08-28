@@ -56,6 +56,7 @@ unsigned int ps3_hle_count(void);
 void cellfs_set_root_path(const char* root);
 void cellfs_add_path_mapping(const char* ps3_prefix, const char* host_path);
 void vm_write32(uint64_t addr, uint32_t val);   /* big-endian guest store */
+void gt5p_spu_register_all(void);         /* generated: src/gen/spu_workloads.c */
 }
 
 /* RSX local memory, as cellGcmGetConfiguration reports it (cellGcmSys.c). */
@@ -222,6 +223,7 @@ int main(int argc, char* argv[])
 
     ppu_recomp_register();
     ppu_install_thread_trampoline();
+    gt5p_spu_register_all();   /* after the ELF load: fingerprints the loaded image */
 
     uint32_t entry_addr = (uint32_t)elf.func_addr;
     auto entry_func = dispatch_lookup(entry_addr);

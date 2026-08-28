@@ -47,8 +47,27 @@ set(PS3RECOMP_PPU_SOURCES
     "${PS3RECOMP_DIR}/runtime/ppu/ppu_fs.cpp"       # cellFs VFS
 )
 
+# Lifted SPU images. All four of this title's SPURS workloads carry the same
+# policy module (the WWS job manager), embedded in EMAIN.ELF rather than loaded
+# from a data file -- see src/gen/spu_workloads.c.
+option(GT5P_ENABLE_SPU "Compile and register the lifted SPU images" ON)
+if(GT5P_ENABLE_SPU)
+    file(GLOB GT5P_SPU_LIFTED CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/generated/spu_lifted/*/spu_recomp.c")
+    list(LENGTH GT5P_SPU_LIFTED N_SPU)
+    message(STATUS "lifted SPU images: ${N_SPU}")
+    set(GT5P_SPU_SOURCES "${CMAKE_SOURCE_DIR}/src/gen/spu_workloads.c" ${GT5P_SPU_LIFTED})
+    # The lifted sources include "spu_context.h" relative to the runtime; scope
+    # the include to these TUs so the huge PPU chunks keep their cached command.
+    set_source_files_properties(${GT5P_SPU_SOURCES} PROPERTIES
+        INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/spu")
+else()
+    set(GT5P_SPU_SOURCES "")
+endif()
+
 add_executable(gt5p
     src/main.cpp
+    ${GT5P_SPU_SOURCES}
     src/gen/ppu_hle_nids.cpp    # generated: NID -> ps3recomp lib handler
     ${PS3RECOMP_PPU_SOURCES}
     ${GENERATED_SOURCES}

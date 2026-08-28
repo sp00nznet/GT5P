@@ -28,14 +28,16 @@ RSX pipeline built by the studio that cared most about it, and Polyphony's own
 packed filesystem holding 1.8 GB of assets. Tokyo Jungle, the previous most
 complex target, is 7,924 functions.
 
-## Status: Phase 7 — It Boots
+## Status: Phase 8 — It Boots and SPU Code Runs
 
 > It builds and it runs. A 70 MB native x86-64 executable loads the game's own
 > ELF, runs its CRT, brings up SPURS across five SPUs, initialises `cellGcmSys`,
-> configures video out at 1280×720 and registers its tiles, zcull and display
-> buffers — then parks in a 20 ms poll loop waiting for SPU work that nothing is
-> running yet. No crash, no exit, no unimplemented NID hit on the way. It has not
-> drawn a pixel or opened a single game file.
+> configures video out at 1280×720, registers its tiles, zcull and display
+> buffers — and runs the title's own SPU code: the WWS job manager policy module,
+> lifted from the ELF, executes and DMAs its workload descriptor out of main
+> memory. It then parks in a 20 ms poll loop. No crash, no exit, and no
+> unimplemented NID hit on the way. It has not drawn a pixel or opened a game
+> file.
 
 | Milestone | Status |
 |-----------|--------|
@@ -49,7 +51,8 @@ complex target, is 7,924 functions.
 | ELF loading & VM setup | **Done** — segments, PT_TLS, OPD entry, fault-commit |
 | CRT initialisation | **Done** — TLS block, `r13`, argv/envp |
 | LV2 syscall dispatch | **Done** — full table, 5 guest threads run |
-| SPURS bring-up | **Partial** — 4 workloads added, no SPU image lifted so we run none |
+| SPU lifting (`Wws_Job` policy module) | **Done** — 193 functions, resolves and executes |
+| SPURS bring-up | **Partial** — PM runs and DMAs; no job chain completes yet |
 | Graphics (RSX → D3D12) | **Partial** — GCM init, 1280×720, tiles/zcull/buffers; nothing drawn |
 | Audio (`cellAudio` → WASAPI) | Not started |
 | Input (`cellPad` → XInput) | Not started |
@@ -132,22 +135,50 @@ Built with ps3recomp | 39657 lifted functions
 [cellGcmSys]    3 tiles, zcull 1920x1088, display buffers 0 and 1, MapMainMemory(0x20000000, 174 MB)
 ```
 
-Then it settles: the main thread polls at guest `0x00941EE0` on a 20 ms
-`sys_timer_usleep`, and two worker threads sit in `sys_cond_wait` at
-`0x009C2388`. Everything stays alive; nothing advances.
+…and then the SPU actually runs:
 
-**The reason is known.** All four SPURS workloads carry the same program:
-`Wws_Job`, Sony's WWS job manager, an 11,648-byte SPU image embedded in the ELF
-at `0x00F4CB80`. Nothing has lifted it, so no SPU runs, no job completes, and the
-threads waiting on job completion wait forever. That image is embedded rather
-than loaded from a data file, which makes it extractable statically —
-`extract_spu_images.py` and `spu_lifter.py` are the next tools to point at this.
+```
+[GT5P]      SPU: Wws_Job registered (fp=0x6FFFB30E41EE17BC, 11648 bytes at 0x00F4CB80)
+[cellSpurs] JobGuardInitialize(guard=0x20039900 chain=0x20039780 notify=1 autoReset=1)
+[cellSpurs] wid=0 PM resolved (fp=0x6FFFB30E41EE17BC image=1)
+[spurs-pm]  DMA cmd=0x40 lsa=0x00B00 ea=0x020017C00 size=0x100 tag=8
+[spurs-pm]  DMA cmd=0x20 lsa=0x00B00 ea=0x020017C40 size=0x10 tag=8
+[spurs-pm]  DMA cmd=0x40 lsa=0x00D00 ea=0x020017C80 size=0x80 tag=8
+```
+
+That is lifted SPU code executing on a host thread, issuing MFC transfers to pull
+its workload descriptor out of guest main memory. All four of this title's SPURS
+workloads carry the same program — `Wws_Job`, Sony's WWS job manager, 11,648
+bytes embedded in the ELF at `0x00F4CB80`. Unlike the job binaries most titles
+load from their data files, this one could be taken statically: extract, 193
+functions from `find_spu_functions.py`, lift, register.
+
+It then settles: the main thread polls at guest `0x00941EE0` on a 20 ms
+`sys_timer_usleep`. The job manager reads its descriptor, finds no job to claim
+and returns, so nothing advances past that.
 
 Two things worth noting about how quiet the run is. **No NID went
 unimplemented** — 487 handlers were registered from ps3recomp's libraries and the
 boot path did not reach past them. And **no file was opened**: the title has not
 asked for a single byte of its 1.8 GB of assets yet, which places the stall
 before any content loading, not inside it.
+
+### The Fingerprint Is Not FNV-1a-64
+
+Registering a lifted SPU image means matching it by content hash, and the obvious
+move is to compute that hash offline and bake in the constant. That silently does
+not work here.
+
+`spu_workload_fingerprint` is documented as FNV-1a-64 and seeds with
+`1469598103934665603` — the real offset basis, `14695981039346656037`
+(`0xCBF29CE484222325`), with a digit dropped. It is self-consistent, so it is a
+perfectly good hash and nothing inside the runtime notices. But every offline
+FNV-1a-64 implementation disagrees, and a mismatched fingerprint is not an error:
+the workload is simply logged as `PM NOT LIFTED` and never runs.
+
+This port sidesteps the whole question by computing the fingerprint at
+registration time with the runtime's own function, over the image already in
+guest memory. Correct whichever value the basis holds.
 
 ### Imports Resolve Without an Import Resolver
 
@@ -307,8 +338,9 @@ GT5P/
 
 Early days, and the biggest jobs have not started:
 
-- **The `Wws_Job` SPU image** — the current blocker, described above. Extract it
-  from `0x00F4CB80`, lift it, and the four SPURS workloads have something to run.
+- **Why no job is ever claimed** — the job manager runs, reads its descriptor and
+  finds nothing to do, and the boot never gets past its 20 ms poll. Working out
+  what should be queuing work is the current blocker.
 - **Four VMX instructions** — `stvrx`, `stvlx`, `vsumsws`, `vsum4sbs`. 72 sites,
   and the only gap in an otherwise complete lift.
 - **RSX graphics** — GT5P at 1080p on 2006 hardware means an aggressively tuned
