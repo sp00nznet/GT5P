@@ -23,24 +23,25 @@ x86-64 executable. No emulator at runtime. No dynamic translation. The game's ow
 code, compiled for your machine.
 
 This one is a step up from every ps3recomp target so far. GT5P is a full retail
-engine: 40,476 PPU functions, 439 imported system calls across 26 modules, an
+engine: 39,653 lifted PPU functions, 439 imported system calls across 26 modules, an
 RSX pipeline built by the studio that cared most about it, and Polyphony's own
 packed filesystem holding 1.8 GB of assets. Tokyo Jungle, the previous most
 complex target, is 7,924 functions.
 
-## Status: Phase 3 — Binaries Decrypted, Analysed, Nothing Lifted Yet
+## Status: Phase 5 — Whole Binary Lifted to C++, Nothing Runs Yet
 
-> The package is unpacked, both SELFs are decrypted to plain ELF, and the game
-> binary has been fully analysed: function boundaries, imports and NIDs. No code
-> has been lifted and nothing runs. This is the honest starting line.
+> The package is unpacked, both SELFs are decrypted to plain ELF, the game binary
+> is fully analysed, and all 39,653 PPU functions are lifted to C++ — 3.4 million
+> lines of it. Only 72 instructions in the entire binary went untranslated. There
+> is no build yet: no runtime glue, no dispatch table, no `main`. Nothing runs.
 
 | Milestone | Status |
 |-----------|--------|
 | PKG extraction | **Done** — 3,019 files, 1.8 GB |
 | SELF decryption (`EBOOT.BIN`, `EMAIN.SELF`) | **Done** — RAP-derived, validated against a known-good control |
 | ELF analysis & import resolution | **Done** — 439 imports, 291 NIDs resolved (66%) |
-| Function boundary detection | **Done** — 40,476 functions, all 39,299 `.opd` descriptors verified as starts |
-| PPU code lifting | Not started |
+| Function boundary detection | **Done** — 40,476 found, 38,598 in executable sections |
+| PPU code lifting | **Done** — 39,653 functions, 3.4M lines, 72 instructions unlifted |
 | Project scaffold & build system | Not started |
 | ELF loading & VM setup | Not started |
 | CRT initialisation | Not started |
@@ -62,6 +63,8 @@ Entry point      0xF9D690
 Segments         1 executable (15.9 MB of code), 8 program headers
 Instructions     3,997,458 disassembled
 Functions        40,476  (39,299 from .opd, the rest from prologue/leaf/branch passes)
+                 1,878 of those sit above the last executable section (0xBE0AF4)
+                 and disassemble as .rodata; they are dropped before lifting
 Imports          439 functions across 26 modules
 NIDs resolved    291 / 439
 Assets           USRDIR/PDIPFS — 3,019 files, 1.8 GB, Polyphony's own packed VFS
@@ -88,6 +91,26 @@ gracefully rather than work.
 The 148 unresolved NIDs cluster in `cellDmux`, `cellPamf`, `libvdec`,
 `cellVpost`, `cellImeJpUtility` and `cellUsbd` — the media-decode and peripheral
 paths. Those are stub-or-implement decisions for later, not blockers now.
+
+### Lifting
+
+All 38,598 in-range functions went through `ppu_lifter.py` in about a minute on
+twelve workers:
+
+```
+Input            38,598 functions (+398 recovered by splitting merged ranges)
+Emitted          39,653 functions, 15,858 unique call targets
+Jump tables      194 dispatchers, 2,178 case targets, all resolved internally
+Output           6 chunks + header, 3,404,026 lines, 194 MB of C++
+Unlifted         72 instructions  (stvrx/stvlx x33 each, vsumsws x3, vsum4sbs x3)
+Embedded data    5,010 .word literals inside function ranges
+Clipped          21 functions whose range ends mid-flow; each emits a halt
+```
+
+72 unlifted instructions out of 3,997,458 is a good result and a short list: two
+VMX unaligned-store forms and two VMX saturating-sum forms. They will need
+handling in the lifter before anything that touches them can run, but they are a
+bounded, nameable problem rather than an open-ended one.
 
 ### Getting to a Plain ELF Was the First Real Problem
 
@@ -135,8 +158,9 @@ Native x86-64 executable
 
 ## Building
 
-Nothing to build yet — no code has been lifted. What follows is the analysis
-pipeline, which is reproducible today.
+There is no build yet — the lifted C++ exists but has no runtime glue, no
+dispatch table and no `main` to link against. What follows is the analysis and
+lifting pipeline, which is reproducible today.
 
 ### Prerequisites
 
@@ -159,7 +183,15 @@ ps3sce -m $MI -d input/pkg/USRDIR/EMAIN.SELF input/EMAIN.ELF
 # 3. Analyse
 python /path/to/ps3recomp/tools/elf_parser.py     input/EMAIN.ELF --imports > analysis/imports.json
 python /path/to/ps3recomp/tools/find_functions.py input/EMAIN.ELF --json --output analysis/functions.json
+
+# 4. Drop the .rodata that find_functions mistook for code, then lift
+python -c "import json; f=json.load(open('analysis/functions.json'));   json.dump([x for x in f if int(x['start'],16) < 0xBE0AF4],             open('analysis/functions_code.json','w'))"
+python /path/to/ps3recomp/tools/ppu_lifter.py input/EMAIN.ELF     --functions analysis/functions_code.json --output generated     --code-end 0xBE0AF4 --header-name ppu_recomp.h --source-name ppu_recomp.c
 ```
+
+`0xBE0AF4` is the end of the last executable *section*. The R-X `PT_LOAD`
+segment runs 3.6 MB past it into read-only data, and both `find_functions` and
+the lifter will happily promote string tables into functions without that bound.
 
 `scripts/decrypt_self.py` is a pure-Python alternative that does the key
 derivation and segment decryption in one pass. Its key derivation is correct and
@@ -199,9 +231,10 @@ GT5P/
 
 Early days, and the biggest jobs have not started:
 
-- **PPU lifting** — 40,476 functions is roughly five times Tokyo Jungle. Expect
-  the lifter to hit instruction patterns nothing has exercised yet, particularly
-  VMX/AltiVec, which a 2008 Polyphony engine will lean on hard.
+- **The runtime glue** — the next real milestone. Dispatch table, ELF loader,
+  import resolution, CRT startup, `main`. Everything downstream is blocked on it.
+- **Four VMX instructions** — `stvrx`, `stvlx`, `vsumsws`, `vsum4sbs`. 72 sites,
+  and the only gap in an otherwise complete lift.
 - **RSX graphics** — GT5P at 1080p on 2006 hardware means an aggressively tuned
   command stream. This is the deep end of the RSX → D3D12 work.
 - **PDIPFS** — Polyphony's packed VFS. 3,019 opaque files with two-letter names.
