@@ -166,37 +166,58 @@ before any content loading, not inside it.
 
 ### The Current Blocker, Precisely
 
-`GT5P_MAINSTACK=<seconds>` suspends the main thread, walks its **host** stack
-with the Win64 unwinder and maps each frame back through the function table.
-From ~12 s onward the answer never changes:
+Main livelocks. `GT5P_MAINSTACK=<seconds>` suspends it, unwinds its **host**
+stack with the Win64 unwinder and maps each frame back through the function
+table; `GT5P_PEEK=<addr>[,...]` dumps guest words with one level of pointer
+indirection. Together they walk the whole chain out.
 
 ```
-[mainstack] in=func_00B756D0 lr=0x00B757EC in_hle=-
 [hostchain]  <host>  func_00B756D0  func_0083A210  func_0083AAA0  func_007FA158
              <host>  func_00838A60  func_00A274B8  func_00A27810  func_0002FB38
              <host>  func_007D2528  func_007D6C60  func_00011B28 ... func_00010230
-[mainregs]   r4..r12 = CCCCCCD4   r27 = CCCCCCD4   [r9] = CCCCCCD4
+[mainregs]   r4..r12 = CCCCCCD4   r27 = CCCCCCD4
 ```
 
-`func_00B756D0+0x11C` calls the allocator front-end at `0x008B0A38`, and the
-loop it is stuck in is the `lwarx`/`stwcx.` refcount increment at `0x00B75820`.
-Its target, `r9`, is `0xCCCCCCD4` — and `0x008B0920` is the function that writes
-`0xCCCCCCCC` into `[block+0]`, `[block+4]`, `[block+8]` as its
-uninitialised-memory poison. `0xCCCCCCCC + 8 = 0xCCCCCCD4`. So an allocation
-upstream handed back poison as a pointer, and the game has been dereferencing it
-ever since.
+`func_00B756D0+0x11C` allocates a 24-byte node and links it into a container,
+about two million times over (the refcount it bumps climbs past `0x200990`).
+Every pointer it touches is `0xCCCCCCD4`, and here is where that comes from:
 
-This was worth the tooling: `ctx->lr` alone is a lie here. The lifter only writes
-`ctx->lr` before a `bl`, so a function reached by a tail branch, or looping
-without calling anything, leaves it pointing at whatever came before. The host
-unwind is what identified the frame; the register dump is what named the poison.
+1. `func_008B0A38` picks size class 5 for a 24-byte request and tail-branches to
+   the class allocator `func_008B0920` with `entry = pool->base + 5*80`.
+2. The pool at `0x010E3760` and its 20-entry array at `0x20006458` are built
+   **correctly** — `func_008B02B8` allocates `n*80+8`, sets `pool->base` to
+   `block+8`, `func_008AF3B8` zeroes each 0x20-byte entry and initialises its
+   lock at `+32`, and `func_008AF2C8` fills in `{+0: owner, +4: size}`. All
+   verified with the runtime's store watch (`LBP_WW`).
+3. The class list is empty, so `func_008B0818` refills: `func_008B0798` carves a
+   chunk, `func_008AF308` links it, and the head at `entry+8` is written —
+   **`0xFFFFFFFF`**.
+4. The next pop follows `-1` as a pointer, reads the top of the 4 GB VM window,
+   and hands back garbage. `func_008B0920` stamps `0xCCCCCCCC` into the block's
+   first three words (its uninitialised-memory poison) and returns `block+16`.
+   `0xCCCCCCCC + 8 = 0xCCCCCCD4`.
 
-Two other things are now ruled out, which narrows it usefully:
+So the first domino is **`func_008B0798` returning `-1`** — the chunk refill
+fails. Its arena is `pool[+0x00..+0x04]` = `0x2A9BF000..0x2ADBF000` (4 MB) with
+`pool[+0x18]` = `0x400` as the chunk size. Why a 1 KB carve out of a 4 MB arena
+fails is the next question, and it is a *small* one.
 
-- **It is not an unresolved import.** `in_hle` is empty and no NID on the boot
-  path is unimplemented.
-- **It is not the reservation logic.** `PPU_RESV_OFF=1`, which turns `stwcx.`
-  into a plain compare-and-swap, changes nothing.
+Ruled out along the way, each of which was a plausible suspect:
+
+- **Not an unresolved import** — `in_hle` is empty and no NID on the boot path
+  is unimplemented.
+- **Not the reservation logic** — `PPU_RESV_OFF=1`, which turns `stwcx.` into a
+  plain compare-and-swap, changes nothing.
+- **Not a mis-lifted index** — the `rlwinm` chain that computes the size class
+  and the 80-byte stride was checked instruction by instruction against the
+  generated C.
+- **Not a missing function** — the one hole the runtime reported
+  (`0x00683A48`) is seeded and gone.
+
+`ctx->lr` is worth a warning: the lifter writes it only before a `bl`, so a
+function reached by a tail branch, or looping without calling anything, leaves
+it pointing at whatever came before. It named the wrong frame for an hour. The
+host unwind is what settled it.
 
 ### Graphics
 
@@ -472,8 +493,8 @@ GT5P/
 
 Early days, and the biggest jobs have not started:
 
-- **The poisoned allocation** — the current blocker, described above. Which
-  earlier call was supposed to initialise the block `func_00B756D0` is walking?
+- **`func_008B0798` returns -1** — the current blocker, described above. A 1 KB
+  chunk carve out of a 4 MB arena fails, and everything downstream is poison.
 - **`jBE66D8D2`** issues MFC transfers to garbage effective addresses. (The other
   suspect image, `j96888A5F`, turned out to be 40 KB of zeros followed by float
   coefficients — a data blob, not code. "1 function from 53,648 bytes" was the

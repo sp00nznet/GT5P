@@ -184,6 +184,24 @@ static DWORD WINAPI main_stack_dump(LPVOID secs)
     fprintf(stderr, "\n[mainregs] [r9]=%08X [r26]=%08X\n",
             vm_read32((uint32_t)g_main_ctx.gpr[9]),
             vm_read32((uint32_t)g_main_ctx.gpr[26]));
+
+    /* GT5P_PEEK=addr[,addr...]: eight guest words at each address, then eight
+     * more at whatever the first word points to. One level of indirection is
+     * enough to read a pointer slot and the object behind it in one go. */
+    if (const char* peek = getenv("GT5P_PEEK")) {
+        char buf[512];
+        strncpy(buf, peek, sizeof buf - 1); buf[sizeof buf - 1] = 0;
+        for (char* tok = strtok(buf, ","); tok; tok = strtok(nullptr, ",")) {
+            uint32_t a = (uint32_t)strtoul(tok, nullptr, 0);
+            for (int level = 0; level < 2 && a; level++) {
+                fprintf(stderr, "[peek] %08X:", a);
+                for (int k = 0; k < 8; k++)
+                    fprintf(stderr, " %08X", vm_read32(a + (uint32_t)k * 4));
+                fputc('\n', stderr);
+                a = vm_read32(a);
+            }
+        }
+    }
     fprintf(stderr, "[hostchain]%s\n", hoststack);
 
     uint32_t last = 0;
