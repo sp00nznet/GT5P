@@ -275,10 +275,37 @@ The first builds the size-class table. The second — the CRT heap initialiser,
 `func_009BFEF8` passes it `size=0x100000, align=1920` — runs afterwards and
 writes over it. That is what leaves `owner` and `size` reading `-1`.
 
-**Next step, precisely:** work out why those two run in that order, or why their
-ranges overlap. On hardware the heap has to exist before anything allocates from
-it, so one of the two is being reached wrongly — and both are entered from
-`func_00010368`, at different call sites. That function is where to look.
+### It Is Not the Ordering
+
+Traced and eliminated. `func_00010368` calls `bl 0x9377C0` — the CRT heap
+initialiser — at `0x0001043C`, **before** static init at `0x0001048C` and main
+at `0x000104B8`. Verified in the disassembly *and* in the lifted C, including
+the `bge` that guards the loop above it. `func_00937EF0` (malloc) also calls it
+lazily when the heap slot is null, and that slot is set (`*(0x0117FEA0)` =
+`0x011806B0`), so it initialises exactly once. The heap exists before anything
+allocates from it, as it must.
+
+The CRT heap is the whole guest arena: object at `0x011806B0`, base from
+`*(0x01180730)`, size `*(0x01180734)` = `0x0AE00000` — 174 MB, which is exactly
+what `cellGcmMapMainMemory(0x20000000, 0xAE00000)` maps.
+
+### Two Allocators, One Address
+
+The pool at `0x010E3760` owns a single allocation split in two: a page-allocator
+object at `0x200063D0` and a 20-entry, 80-byte-stride size-class array at
+`0x20006458` (`pool[+0x08]` and `pool[+0x0C]`).
+
+The second writer walks **that same array, with that same 80-byte stride**,
+writing two words per entry. It is not a bulk memset overrunning its bounds —
+it is a second allocator structure of identical shape being built at the same
+address, from the 1 MB heap that `func_009BFEF8` creates inside `main`.
+
+So two allocator instances occupy the same memory, and the question is which
+allocation is wrong.
+
+**Next step, precisely:** both structures are carved by `func_0094FF30`, the CRT
+heap's block allocator. Log `(heap, size, returned address)` for every call and
+find the two returns whose ranges overlap. One function, one log, one answer.
 
 Ruled out along the way, each of which was a plausible suspect:
 
