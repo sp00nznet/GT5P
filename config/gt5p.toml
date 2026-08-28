@@ -1,0 +1,78 @@
+# Gran Turismo 5 Prologue Recompiled — ps3recomp configuration
+# Game:      Gran Turismo 5 Prologue (NPUA80075, US PSN)
+# Developer: Polyphony Digital
+# Publisher: Sony Computer Entertainment
+#
+# The title ships two SELFs. EBOOT.BIN is a small (420 KB) launcher; EMAIN.SELF
+# is the game (17 MB). Recompilation targets EMAIN.
+
+[input]
+elf_path  = "input/EMAIN.ELF"
+sfo_path  = "input/pkg/PARAM.SFO"
+
+[output]
+output_dir          = "generated"
+func_prefix         = "gt5p_"
+generate_func_table = true
+functions_per_file  = 500
+
+[recompiler]
+optimization_level = 1
+emit_comments      = true
+detect_jump_tables = true
+
+[modules]
+# Every module EMAIN.ELF actually imports, in descending import count.
+# Anything not listed here the binary does not ask for.
+sceNp                 = "hle"   # 81 — GT5P is an online title; PSN is the largest single dependency
+cellSysutil           = "hle"   # 45
+cellHttp              = "hle"   # 31 — dealership/news feeds
+sysPrxForUser         = "hle"   # 29
+cellGcmSys            = "hle"   # 28 — RSX command buffer
+sys_io                = "hle"   # 27 — cellPad lives here on 2.15-era firmware
+sys_net               = "hle"   # 22
+sys_fs                = "hle"   # 22
+cellSpurs             = "auto"  # 22 — SPU task management
+cellPamf              = "hle"   # 14 — movie container parsing
+cellNetCtl            = "hle"   # 13
+cellAudio             = "hle"   # 12
+cellDmux              = "hle"   # 12
+cellUsbd              = "hle"   # 12 — wheel / peripheral support
+libvdec               = "hle"   #  8
+cellAdec              = "hle"   #  8
+cellRtc               = "hle"   #  7
+cellHttpUtil          = "hle"   #  5
+cellVpost             = "hle"   #  4
+cellMusicUtility      = "hle"   #  4 — custom soundtrack
+cellImeJpUtility      = "hle"   # 24 — Japanese IME (online name entry)
+cellSysmodule         = "hle"   #  3
+sceNp2                = "hle"   #  2
+cellSsl               = "hle"   #  2
+cellSysutilAvconfExt  = "hle"   #  1
+sceNpBasicLimited     = "hle"   #  1
+
+[memory]
+main_ram_mb     = 256
+vram_mb         = 256
+thread_stack_kb = 1024
+
+[threading]
+max_ppu_threads = 64
+max_spu_threads = 6
+spu_backend     = "interpreter"
+
+[graphics]
+backend = "d3d12"
+vsync   = "on"
+
+[audio]
+backend     = "wasapi"
+sample_rate = 48000
+
+[input_mapping]
+backend = "xinput"
+
+[debug]
+log_hle_calls          = true
+log_missing_nids       = true
+break_on_unimplemented = false

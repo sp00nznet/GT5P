@@ -1,0 +1,62 @@
+# Build output
+build/
+build_*/
+out/
+
+# Generated recompiled code (large, machine-generated)
+generated/
+
+# Analysis output — derived from the game binary, regenerate it yourself
+analysis/
+
+# Game files — never commit copyrighted data
+input/
+data/keys
+data/ldr_curves
+data/vsh_curves
+*.elf
+*.ELF
+*.bin
+*.BIN
+*.self
+*.SELF
+*.sprx
+*.pkg
+*.PKG
+*.rap
+*.edat
+*.EDAT
+*.zip
+*.rar
+*.7z
+*.iso
+*.ISO
+
+# Save data
+savedata/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.vs/
+.vscode/
+*.suo
+*.user
+.idea/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
