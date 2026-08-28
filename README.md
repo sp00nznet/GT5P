@@ -28,12 +28,14 @@ RSX pipeline built by the studio that cared most about it, and Polyphony's own
 packed filesystem holding 1.8 GB of assets. Tokyo Jungle, the previous most
 complex target, is 7,924 functions.
 
-## Status: Phase 5 — Whole Binary Lifted to C++, Nothing Runs Yet
+## Status: Phase 7 — It Boots
 
-> The package is unpacked, both SELFs are decrypted to plain ELF, the game binary
-> is fully analysed, and all 39,653 PPU functions are lifted to C++ — 3.4 million
-> lines of it. Only 72 instructions in the entire binary went untranslated. There
-> is no build yet: no runtime glue, no dispatch table, no `main`. Nothing runs.
+> It builds and it runs. A 70 MB native x86-64 executable loads the game's own
+> ELF, runs its CRT, brings up SPURS across five SPUs, initialises `cellGcmSys`,
+> configures video out at 1280×720 and registers its tiles, zcull and display
+> buffers — then parks in a 20 ms poll loop waiting for SPU work that nothing is
+> running yet. No crash, no exit, no unimplemented NID hit on the way. It has not
+> drawn a pixel or opened a single game file.
 
 | Milestone | Status |
 |-----------|--------|
@@ -41,16 +43,17 @@ complex target, is 7,924 functions.
 | SELF decryption (`EBOOT.BIN`, `EMAIN.SELF`) | **Done** — RAP-derived, validated against a known-good control |
 | ELF analysis & import resolution | **Done** — 439 imports, 291 NIDs resolved (66%) |
 | Function boundary detection | **Done** — 40,476 found, 38,598 in executable sections |
-| PPU code lifting | **Done** — 39,653 functions, 3.4M lines, 72 instructions unlifted |
-| Project scaffold & build system | Not started |
-| ELF loading & VM setup | Not started |
-| CRT initialisation | Not started |
-| LV2 syscall dispatch | Not started |
-| Graphics (RSX → D3D12) | Not started |
-| SPU / SPURS job handling | Not started |
+| PPU code lifting | **Done** — 39,657 functions, 3.4M lines, 72 instructions unlifted |
+| Import resolution (NID) | **Done** — all 439 thunks lifted as `ps3_hle_call`, nothing patched at load |
+| Project scaffold & build system | **Done** — clang-cl + Ninja, 70 MB executable |
+| ELF loading & VM setup | **Done** — segments, PT_TLS, OPD entry, fault-commit |
+| CRT initialisation | **Done** — TLS block, `r13`, argv/envp |
+| LV2 syscall dispatch | **Done** — full table, 5 guest threads run |
+| SPURS bring-up | **Partial** — 4 workloads added, no SPU image lifted so we run none |
+| Graphics (RSX → D3D12) | **Partial** — GCM init, 1280×720, tiles/zcull/buffers; nothing drawn |
 | Audio (`cellAudio` → WASAPI) | Not started |
 | Input (`cellPad` → XInput) | Not started |
-| PDIPFS asset loading | Not started |
+| PDIPFS asset loading | Not started — the title has not opened a file yet |
 
 ### What the Binary Looks Like
 
@@ -112,6 +115,62 @@ VMX unaligned-store forms and two VMX saturating-sum forms. They will need
 handling in the lifter before anything that touches them can run, but they are a
 bounded, nameable problem rather than an open-ended one.
 
+### What the First Boot Does
+
+```
+$ ./build/gt5p.exe
+=== Gran Turismo 5 Prologue Recompiled ===
+Built with ps3recomp | 39657 lifted functions
+[ELF]  segments 0x00010000 (15.9 MB, R-X) and 0x00F50000 (RW), PT_TLS 0x01034570
+[ELF]  entry OPD 0x00F9D690 -> code 0x00010230, TOC 0x010382D8
+[crt]  sys_initialize_tls: block 0x0E000000, r13=0x0E007000
+[SPU]  initialize(nspu=6, nrawspu=0)
+[SYS]  5 guest threads created -- Job Manager Event Handler, spurs_printf_handler, 3 PDI workers
+[cellSpurs]     Initialize nSpus=5, 4 workloads added (Wws_Job, pm=0x00F4CB80, 11,648 bytes)
+[cellGcmSys]    Init(cmdSize=0x10000, ioSize=0x100000, ioAddr=0x40000000)
+[cellVideoOut]  Configure resId=2 -> 1280x720, pitch 8192
+[cellGcmSys]    3 tiles, zcull 1920x1088, display buffers 0 and 1, MapMainMemory(0x20000000, 174 MB)
+```
+
+Then it settles: the main thread polls at guest `0x00941EE0` on a 20 ms
+`sys_timer_usleep`, and two worker threads sit in `sys_cond_wait` at
+`0x009C2388`. Everything stays alive; nothing advances.
+
+**The reason is known.** All four SPURS workloads carry the same program:
+`Wws_Job`, Sony's WWS job manager, an 11,648-byte SPU image embedded in the ELF
+at `0x00F4CB80`. Nothing has lifted it, so no SPU runs, no job completes, and the
+threads waiting on job completion wait forever. That image is embedded rather
+than loaded from a data file, which makes it extractable statically —
+`extract_spu_images.py` and `spu_lifter.py` are the next tools to point at this.
+
+Two things worth noting about how quiet the run is. **No NID went
+unimplemented** — 487 handlers were registered from ps3recomp's libraries and the
+boot path did not reach past them. And **no file was opened**: the title has not
+asked for a single byte of its 1.8 GB of assets yet, which places the stall
+before any content loading, not inside it.
+
+### Imports Resolve Without an Import Resolver
+
+The usual approach is to patch the guest's import table at load time — walk the
+PLT, write function descriptors, hope the addresses were read correctly. This
+port does none of that.
+
+Every imported function has a `li r12,0` thunk in `.text` that the PS3 loader
+would have patched at boot. `scripts/gen_hle_stubs.py` reads the ELF's own module
+descriptors for the `(thunk address, NID)` pairs — 439 of them across 26 modules,
+all in `0x00BDD414..0x00BE0AD4` — and hands them to the lifter's `--hle-stubs`,
+which emits each thunk body as:
+
+```c
+void func_00BDD414(ppu_context* ctx) {
+        ps3_hle_call(0x0B168F92u, ctx); return;  /* import stub */
+}
+```
+
+Resolution is then the runtime's NID registry, decided at compile time. There is
+no load-time patching to get wrong, no hardcoded slot addresses to re-derive when
+the binary changes, and the mechanism is title-agnostic.
+
 ### Getting to a Plain ELF Was the First Real Problem
 
 GT5P's SELFs are NPDRM binaries with **key revision 0x0001** and NPD **license
@@ -158,10 +217,6 @@ Native x86-64 executable
 
 ## Building
 
-There is no build yet — the lifted C++ exists but has no runtime glue, no
-dispatch table and no `main` to link against. What follows is the analysis and
-lifting pipeline, which is reproducible today.
-
 ### Prerequisites
 
 - **Python** 3.10+ and `pip install -r requirements.txt`
@@ -193,6 +248,17 @@ python /path/to/ps3recomp/tools/ppu_lifter.py input/EMAIN.ELF     --functions an
 segment runs 3.6 MB past it into read-only data, and both `find_functions` and
 the lifter will happily promote string tables into functions without that bound.
 
+```bash
+# 5. Build (clang-cl + Ninja inside a VS x64 environment)
+scripts/build.cmd
+
+# 6. Run
+./build/gt5p.exe
+```
+
+`scripts/build.cmd` sources `vcvars64.bat`, then configures and builds. The
+lifted chunks are ~35 MB of C++ each; the first build takes a while.
+
 `scripts/decrypt_self.py` is a pure-Python alternative that does the key
 derivation and segment decryption in one pass. Its key derivation is correct and
 validated; its ELF reassembly is not yet right, which is why the two-step route
@@ -220,10 +286,20 @@ GT5P/
 │   └── gt5p.toml            # ps3recomp configuration
 ├── scripts/
 │   ├── self_metainfo.py     # RAP -> klicensee -> decrypted SELF metadata info
-│   └── decrypt_self.py      # pure-Python SELF decryptor (key path validated)
+│   ├── decrypt_self.py      # pure-Python SELF decryptor (key path validated)
+│   ├── gen_hle_stubs.py     # ELF import descriptors -> lifter --hle-stubs map
+│   └── build.cmd            # vcvars64 + cmake + ninja
+├── src/
+│   ├── main.cpp             # VM bring-up, ELF load, entry
+│   ├── elf_loader.h         # PT_LOAD / PT_TLS / OPD entry
+│   ├── compat/              # <dirent.h>/<unistd.h> shims for ppu_fs.cpp on Win32
+│   └── gen/
+│       └── ppu_hle_nids.cpp # generated: 487 NID -> ps3recomp handler registrations
+├── CMakeLists.txt
 ├── input/                   # Your game files go here (gitignored)
 ├── analysis/                # Derived from the binary — regenerate, don't commit (gitignored)
-├── generated/               # Recompiled C++ output (gitignored)
+├── generated/               # Lifted C++ output (gitignored)
+├── build/                   # Build output (gitignored)
 └── data/                    # Keys — never committed
 ```
 
@@ -231,8 +307,8 @@ GT5P/
 
 Early days, and the biggest jobs have not started:
 
-- **The runtime glue** — the next real milestone. Dispatch table, ELF loader,
-  import resolution, CRT startup, `main`. Everything downstream is blocked on it.
+- **The `Wws_Job` SPU image** — the current blocker, described above. Extract it
+  from `0x00F4CB80`, lift it, and the four SPURS workloads have something to run.
 - **Four VMX instructions** — `stvrx`, `stvlx`, `vsumsws`, `vsum4sbs`. 72 sites,
   and the only gap in an otherwise complete lift.
 - **RSX graphics** — GT5P at 1080p on 2006 hardware means an aggressively tuned
