@@ -28,14 +28,15 @@ RSX pipeline built by the studio that cared most about it, and Polyphony's own
 packed filesystem holding 1.8 GB of assets. Tokyo Jungle, the previous most
 complex target, is 7,924 functions.
 
-## Status: Phase 9 — Job Chains Run, 12 SPU Images Live
+## Status: Phase 10 — A Window, No Pixels Yet
 
-> The title's SPURS job chains now run. Twelve SPU images are lifted and
-> registered — the WWS job manager policy module plus eleven job binaries — and
-> **every dispatch hits**, around 500,000 of them in 90 seconds. Downstream of
-> that the boot woke up: fifteen guest threads, `cellAudio` initialised with its
-> mixing thread running, `cellPad` up, and the first file the title has ever
-> asked for opened and read. It still has not drawn a pixel or loaded an asset.
+> There is a window: the RSX → D3D12 backend comes up and a 60 Hz vblank/flip
+> ticker drives it. There is nothing in the window. The guest writes one 64 KB
+> command buffer during `cellGcmSys` init, the FIFO drains it, and `put` never
+> moves again — because the **main thread wedges before it reaches its render
+> loop**, spinning on an atomic increment whose target address is `0xCCCCCCD4`:
+> the allocator's uninitialised-memory fill pattern. Every one of its general
+> registers holds that value. Everything else keeps running around it.
 
 | Milestone | Status |
 |-----------|--------|
@@ -54,7 +55,8 @@ complex target, is 7,924 functions.
 | Audio (`cellAudio` → WASAPI) | **Partial** — pipeline up, mixing thread runs, no output device |
 | Input (`cellPad` → XInput) | **Partial** — `cellPadInit` reached |
 | Filesystem | **Partial** — `PARAM.SFO` opens and reads; no asset loads yet |
-| Graphics (RSX → D3D12) | **Partial** — GCM init, 1280×720, tiles/zcull/buffers; nothing drawn |
+| Graphics (RSX → D3D12) | **Partial** — window opens, FIFO drains once, no flip ever requested |
+| Present / vblank ticker | **Done** — `src/gt5p_present.cpp`, 60 Hz |
 | PDIPFS asset loading | Not started |
 
 ### What the Binary Looks Like
@@ -161,6 +163,57 @@ unimplemented** — 487 handlers were registered from ps3recomp's libraries and 
 boot path did not reach past them. And **no file was opened**: the title has not
 asked for a single byte of its 1.8 GB of assets yet, which places the stall
 before any content loading, not inside it.
+
+### The Current Blocker, Precisely
+
+`GT5P_MAINSTACK=<seconds>` suspends the main thread, walks its **host** stack
+with the Win64 unwinder and maps each frame back through the function table.
+From ~12 s onward the answer never changes:
+
+```
+[mainstack] in=func_00B756D0 lr=0x00B757EC in_hle=-
+[hostchain]  <host>  func_00B756D0  func_0083A210  func_0083AAA0  func_007FA158
+             <host>  func_00838A60  func_00A274B8  func_00A27810  func_0002FB38
+             <host>  func_007D2528  func_007D6C60  func_00011B28 ... func_00010230
+[mainregs]   r4..r12 = CCCCCCD4   r27 = CCCCCCD4   [r9] = CCCCCCD4
+```
+
+`func_00B756D0+0x11C` calls the allocator front-end at `0x008B0A38`, and the
+loop it is stuck in is the `lwarx`/`stwcx.` refcount increment at `0x00B75820`.
+Its target, `r9`, is `0xCCCCCCD4` — and `0x008B0920` is the function that writes
+`0xCCCCCCCC` into `[block+0]`, `[block+4]`, `[block+8]` as its
+uninitialised-memory poison. `0xCCCCCCCC + 8 = 0xCCCCCCD4`. So an allocation
+upstream handed back poison as a pointer, and the game has been dereferencing it
+ever since.
+
+This was worth the tooling: `ctx->lr` alone is a lie here. The lifter only writes
+`ctx->lr` before a `bl`, so a function reached by a tail branch, or looping
+without calling anything, leaves it pointing at whatever came before. The host
+unwind is what identified the frame; the register dump is what named the poison.
+
+Two other things are now ruled out, which narrows it usefully:
+
+- **It is not an unresolved import.** `in_hle` is empty and no NID on the boot
+  path is unimplemented.
+- **It is not the reservation logic.** `PPU_RESV_OFF=1`, which turns `stwcx.`
+  into a plain compare-and-swap, changes nothing.
+
+### Graphics
+
+`src/gt5p_present.cpp` opens the window and runs the 60 Hz ticker — a port with
+its own `main()` gets neither for free. Without it `cellGcmTickFlip` never runs,
+so a title that flips waits forever and the FIFO is never drained.
+
+`GCM_DRAINDBG=1` shows exactly how far the guest gets:
+
+```
+[DRAIN] getoff=00000000 put=00010040 ref=00000000 ctx.current=40000004
+[DRAIN] getoff=00010040 put=00010040 ref=00000000 ctx.current=40000004   (x94, unchanged)
+```
+
+One 64 KB command buffer written during init, drained, and then `put` never moves
+again. `CELLMARK_DUMP=4` captures no frames, because the guest never requests a
+flip. The graphics path is not the problem yet — nothing is being asked of it.
 
 ### What Unblocked It
 
@@ -400,7 +453,8 @@ GT5P/
 │   ├── lift_spu_jobs.py     # captured SPU job images -> lifted + registered
 │   └── build.cmd            # vcvars64 + cmake + ninja
 ├── src/
-│   ├── main.cpp             # VM bring-up, ELF load, entry
+│   ├── main.cpp             # VM bring-up, ELF load, entry, GT5P_MAINSTACK probe
+│   ├── gt5p_present.cpp     # window + 60 Hz vblank/flip ticker, RSX FIFO drain
 │   ├── elf_loader.h         # PT_LOAD / PT_TLS / OPD entry
 │   ├── compat/              # <dirent.h>/<unistd.h> shims for ppu_fs.cpp on Win32
 │   └── gen/
@@ -418,11 +472,14 @@ GT5P/
 
 Early days, and the biggest jobs have not started:
 
-- **The two bad SPU images** — `j96888A5F` (1 function lifted from 53 KB) and
-  `jBE66D8D2` (malformed MFC addresses). Described above; the most likely reason
-  the title runs a job loop without ever loading anything.
+- **The poisoned allocation** — the current blocker, described above. Which
+  earlier call was supposed to initialise the block `func_00B756D0` is walking?
+- **`jBE66D8D2`** issues MFC transfers to garbage effective addresses. (The other
+  suspect image, `j96888A5F`, turned out to be 40 KB of zeros followed by float
+  coefficients — a data blob, not code. "1 function from 53,648 bytes" was the
+  tool being right.)
 - **Why nothing is loaded** — 1.8 GB of assets in `USRDIR/PDIPFS` and the title
-  has opened exactly one file.
+  has opened exactly one file. Downstream of the wedge, most likely.
 - **Four VMX instructions** — `stvrx`, `stvlx`, `vsumsws`, `vsum4sbs`. 72 sites,
   and the only gap in an otherwise complete lift.
 - **RSX graphics** — GT5P at 1080p on 2006 hardware means an aggressively tuned

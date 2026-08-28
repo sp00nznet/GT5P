@@ -56,7 +56,15 @@ unsigned int ps3_hle_count(void);
 void cellfs_set_root_path(const char* root);
 void cellfs_add_path_mapping(const char* ps3_prefix, const char* host_path);
 void vm_write32(uint64_t addr, uint32_t val);   /* big-endian guest store */
+uint32_t vm_read32(uint64_t addr);
+uint32_t ppu_prof_resolve_host(void* ra);  /* host RIP -> guest function addr */
+int  ppu_stwcx32(uint64_t ea, uint32_t expected, uint32_t val);
+void ps3_indirect_call(ppu_context* ctx);
+void ps3_hle_call(unsigned nid, ppu_context* ctx);
+uint8_t vm_read8(uint64_t addr);
+extern const char* g_hle_inflight[64];    /* per-thread: HLE currently executing */
 void gt5p_spu_register_all(void);         /* generated: src/gen/spu_workloads.c */
+void gt5p_start_present_thread(void);     /* src/gt5p_present.cpp */
 }
 
 /* RSX local memory, as cellGcmGetConfiguration reports it (cellGcmSys.c). */
@@ -86,6 +94,113 @@ static void (*dispatch_lookup(uint32_t guest_addr))(ppu_context*)
     }
     return nullptr;
 }
+
+/* Nearest lifted function at or below `addr`, for turning a saved return
+ * address back into func_XXXXXXXX+offset. */
+static uint32_t enclosing_func(uint32_t addr)
+{
+    uint64_t lo = 0, hi = function_table_count, best = 0;
+    while (lo < hi) {
+        uint64_t mid = lo + (hi - lo) / 2;
+        uint32_t a = (uint32_t)function_table[mid].addr;
+        if (a <= addr) { best = a; lo = mid + 1; } else hi = mid;
+    }
+    return (uint32_t)best;
+}
+
+#ifdef _WIN32
+/* GT5P_MAINSTACK=<seconds>: after that long, print the main thread's guest call
+ * chain. The lifter's fragment model leaves the ABI back-chain LR slots zero,
+ * so walking is useless; scanning the stack for words that land inside a lifted
+ * function is not, and a lifted function's name IS its guest address.
+ *
+ * The runtime has ppu_dump_guest_stack, but it filters to guest < 0x600000 --
+ * this title's code runs to 0xBE0AF4, so every address worth seeing here is
+ * outside that window. */
+#define GT5P_CODE_LO 0x00010000u
+#define GT5P_CODE_HI 0x00BE0AF4u
+
+static HANDLE g_main_thread;
+static uintptr_t g_last_rip;
+
+static DWORD WINAPI main_stack_dump(LPVOID secs)
+{
+  for (;;) {
+    Sleep((DWORD)(intptr_t)secs * 1000);
+
+    /* Where is the main thread actually executing? ctx->lr only names the last
+     * `bl` the lifted code took, and a function reached by a tail branch, or
+     * looping without calling anything, never updates it. Suspending the thread
+     * and mapping its RIP back through the function table names the guest
+     * function it is *in*. */
+    uint32_t live = 0;
+    char hoststack[1400]; hoststack[0] = 0;
+    if (g_main_thread) {
+        CONTEXT hc; hc.ContextFlags = CONTEXT_FULL;
+        if (SuspendThread(g_main_thread) != (DWORD)-1) {
+            if (GetThreadContext(g_main_thread, &hc)) {
+                live = ppu_prof_resolve_host((void*)hc.Rip);
+                g_last_rip = (uintptr_t)hc.Rip;
+
+                /* Walk the host stack with the Win64 unwinder and map each
+                 * frame back to its guest function. A frame that resolves to
+                 * func_00000000 is runtime/library code, and its position in
+                 * the chain says which lifted function called into it. */
+                int p = 0;
+                for (int f = 0; f < 24 && hc.Rip && p < 1250; f++) {
+                    uint32_t g = ppu_prof_resolve_host((void*)hc.Rip);
+                    p += snprintf(hoststack + p, sizeof(hoststack) - p,
+                                  g ? "  func_%08X" : "  <host:%08X>",
+                                  g ? g : (unsigned)(hc.Rip & 0xFFFFFFFF));
+                    DWORD64 imgBase = 0;
+                    PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(hc.Rip, &imgBase, nullptr);
+                    if (!rf) break;                 /* leaf / no unwind data */
+                    PVOID hd = nullptr; DWORD64 est = 0;
+                    RtlVirtualUnwind(UNW_FLAG_NHANDLER, imgBase, hc.Rip, rf,
+                                     &hc, &hd, &est, nullptr);
+                }
+            }
+            ResumeThread(g_main_thread);
+        }
+    }
+
+    uint32_t sp = (uint32_t)g_main_ctx.gpr[1];
+    fprintf(stderr, "[mainstack] in=func_%08X sp=0x%08X lr=0x%08X ctr=0x%08X r3=0x%08X r31=0x%08X\n",
+            live, sp, (uint32_t)g_main_ctx.lr, (uint32_t)g_main_ctx.ctr,
+            (uint32_t)g_main_ctx.gpr[3], (uint32_t)g_main_ctx.gpr[31]);
+    fprintf(stderr, "[mainstack] in_hle=%s rip=%p\n",
+            g_hle_inflight[0] ? g_hle_inflight[0] : "-", (void*)g_last_rip);
+    {
+        static int once = 0;
+        if (!once++)
+            fprintf(stderr, "[hostmap] stwcx32=%p indirect=%p hle_call=%p "
+                            "read32=%p write32=%p\n",
+                    (void*)&ppu_stwcx32, (void*)&ps3_indirect_call,
+                    (void*)&ps3_hle_call, (void*)&vm_read32, (void*)&vm_write32);
+    }
+    fprintf(stderr, "[mainregs]");
+    for (int r = 0; r < 32; r++)
+        fprintf(stderr, " r%d=%08X", r, (uint32_t)g_main_ctx.gpr[r]);
+    fprintf(stderr, "\n[mainregs] [r9]=%08X [r26]=%08X\n",
+            vm_read32((uint32_t)g_main_ctx.gpr[9]),
+            vm_read32((uint32_t)g_main_ctx.gpr[26]));
+    fprintf(stderr, "[hostchain]%s\n", hoststack);
+
+    uint32_t last = 0;
+    int shown = 0;
+    for (int i = 0; i < 2048 && shown < 10; i++) {
+        uint32_t w = vm_read32(sp + (uint32_t)i * 4);
+        if (w < GT5P_CODE_LO || w >= GT5P_CODE_HI || w == last) continue;
+        uint32_t f = enclosing_func(w);
+        if (!f || w - f == 0 || w - f >= 0x4000) continue;   /* not a return site */
+        fprintf(stderr, "   func_%08X+0x%-5X\n", f, w - f);
+        last = w;
+        shown++;
+    }
+    fflush(stderr);
+  }
+}
+#endif
 
 #ifdef _WIN32
 /* Commit guest pages on first touch, the way ps3recomp's own boot harness
@@ -238,6 +353,18 @@ int main(int argc, char* argv[])
     setup_argv(getenv("PS3_ARGV0") && *getenv("PS3_ARGV0")
                    ? getenv("PS3_ARGV0")
                    : "/app_home/USRDIR/EBOOT.BIN");
+
+#ifdef _WIN32
+    if (const char* secs = getenv("GT5P_MAINSTACK")) {
+        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
+                        GetCurrentProcess(), &g_main_thread,
+                        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, 0);
+        CreateThread(nullptr, 0, main_stack_dump,
+                     (LPVOID)(intptr_t)atoi(secs), 0, nullptr);
+    }
+#endif
+
+    gt5p_start_present_thread();
 
     printf("[GT5P] Executing 0x%08X (TOC 0x%08X)...\n\n",
            entry_addr, (uint32_t)elf.toc);
