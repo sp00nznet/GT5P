@@ -197,10 +197,18 @@ Every pointer it touches is `0xCCCCCCD4`, and here is where that comes from:
    first three words (its uninitialised-memory poison) and returns `block+16`.
    `0xCCCCCCCC + 8 = 0xCCCCCCD4`.
 
-So the first domino is **`func_008B0798` returning `-1`** — the chunk refill
-fails. Its arena is `pool[+0x00..+0x04]` = `0x2A9BF000..0x2ADBF000` (4 MB) with
-`pool[+0x18]` = `0x400` as the chunk size. Why a 1 KB carve out of a 4 MB arena
-fails is the next question, and it is a *small* one.
+The refill path itself reads clean: `func_008AF978` takes a 4080-byte page from
+the pool's page allocator at `pool[+0x08]`, falls back to the general allocator
+if that returns 0, and initialises the chunk. Nothing there can produce `-1`.
+
+And the store watch shows the `0xFFFFFFFF` is **transient** — the very next
+write to `entry+8` is a real pointer, `0x20097900`. So `-1` looks like an
+"insertion in progress" sentinel, and the failure is a **reader following it**:
+`func_008B0920` takes the entry's own lock at `entry+32` (`func_00938DA0`)
+before touching the head, so on hardware nobody can observe the sentinel. That
+makes the per-entry lock the next thing to check — if it is not actually
+excluding under our threading, this is a race, not a logic bug, which would also
+explain why the boot gets *this* far and no further.
 
 Ruled out along the way, each of which was a plausible suspect:
 
