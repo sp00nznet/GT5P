@@ -47,10 +47,56 @@ int watch_level()
 
 }  // namespace
 
+/* GT5P_CANARY=<guest addr>:<expected word>: check that word on every wrapped
+ * call and report the first call after which it changed. Every other probe so
+ * far has been cross-thread, where a buffered stderr makes ordering a guess;
+ * this one runs on the allocating thread, so "it was still right at call #N and
+ * wrong at #N+1" is exact. */
+extern "C" uint32_t vm_read32(uint64_t addr);
+extern "C" void ppu_guest_callstack(const char* tag);
+
+namespace {
+void canary_check(unsigned seq, const char* who)
+{
+    static int      armed = -1;
+    static uint32_t addr, want;
+    static int      broken;
+    if (armed < 0) {
+        const char* e = getenv("GT5P_CANARY");
+        armed = (e && sscanf(e, "%x:%x", &addr, &want) == 2) ? 1 : 0;
+    }
+    if (armed <= 0 || broken) return;
+    uint32_t now = vm_read32(addr);
+    /* Arm only once the word has actually been set: before that it is simply
+     * not written yet, and reporting the pre-init state says nothing. */
+    static int seen;
+    if (!seen) { if (now == want) { seen = 1;
+                     fprintf(stderr, "[canary] 0x%08X reached 0x%08X at call #%u (%s)\n",
+                             addr, want, seq, who); fflush(stderr); }
+                 return; }
+    if (now == want) return;
+    broken = 1;
+    fprintf(stderr, "[canary] 0x%08X changed 0x%08X -> 0x%08X, first seen at "
+                    "call #%u (%s)\n", addr, want, now, seq, who);
+#ifdef _WIN32
+    void* fr[32];
+    USHORT n = RtlCaptureStackBackTrace(0, 32, fr, nullptr);
+    char* mb = (char*)GetModuleHandleA(nullptr);
+    fprintf(stderr, "[canary] host rva:");
+    for (USHORT i = 0; i < n; i++)
+        fprintf(stderr, " %llX", (unsigned long long)((char*)fr[i] - mb));
+    fputc('\n', stderr);
+    ppu_guest_callstack("canary");
+#endif
+    fflush(stderr);
+}
+}  // namespace
+
 extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
                                 uint32_t a5, uint32_t ret)
 {
     int lvl = watch_level();
+    canary_check(g_seq + 1, who);
     if (!lvl) return;
 
     /* func_0094FF30(heap, size, align) -> block. A zero return is a failed

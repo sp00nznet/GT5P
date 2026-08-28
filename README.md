@@ -333,12 +333,39 @@ was wrong. `func_009DA12C`'s real arguments are `(stack_ptr, 1, 0x40000000)` and
 it is called exactly once — it is not "a 1 MB, 64 KB-aligned arena setup". Those
 were reused registers.
 
-**Next step, precisely:** the pool global at `0x010E3760` still points at block
-#44 long after construction, and that block reads as `-1`. The remaining
-explanation that fits every measurement is **use-after-free** — the block is
-freed and recycled, and its new owner fills it. Wrap the CRT `free` (the
-counterpart of `func_0094FF30`) and check whether `0x20006450` is ever handed
-back.
+### A Canary, and an Exact Answer
+
+`GT5P_CANARY=<addr>:<expected>` (in `src/gt5p_allocwatch.cpp`) checks a guest
+word on every wrapped call, arms itself once the word first reaches the expected
+value, and reports the first call after which it changed. It runs **on the
+writing thread**, so unlike every earlier probe there is no buffered-stderr
+ordering to guess at:
+
+```
+[canary] 0x200065E8 reached 0x010E3760 at call #138 (func_008AF2C8)
+[canary] 0x200065E8 changed 0x010E3760 -> 0xFFFFFFFF, first seen at call #577
+```
+
+Correct at call #138. Wrong by call #577. The window is inside
+**`func_009BFCD0`** — the GCM / video-out setup, reached
+`main → func_00013EF0 → func_00668390 → func_009BFEF8 → func_009BFCD0` —
+immediately before its single call to `func_009DA12C(stack, 1, 0x40000000)`,
+where `0x40000000` is the GCM `ioAddr`.
+
+Cleared inside that window: `cellVideoOutGetDeviceInfo` writes 268 bytes at
+`0x011B140C` and `cellVideoOutGetState` 16 bytes beside it — both in the data
+segment, nowhere near the pool.
+
+**A caveat worth stating**, because it cost time: `ppu_prof_resolve_host` maps a
+host address to the *nearest preceding* function-table entry. A frame inside
+lifted code that has no entry of its own is silently attributed to whatever
+comes before it. `func_009C0098` and `func_009C02A8` both appeared in these
+chains repeatedly and are, on instrumenting them, **never called**.
+
+**Next step, precisely:** `func_009BFCD0` makes about eleven calls before
+`func_009DA12C`. Wrap them all with `scripts/instrument_alloc.py` and let the
+canary bisect — the corruption has to land between two consecutive logged calls.
+That is a bounded search rather than a hunt.
 
 ### The Fingerprint Is Not FNV-1a-64
 
