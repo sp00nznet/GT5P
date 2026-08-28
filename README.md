@@ -252,11 +252,33 @@ Ruled out this round, each cheaply and definitively:
   nothing is being silently discarded.
 - **Not the `ydkj_memmove` body override** — it is env-gated and off.
 
-**Next step, precisely:** the page guard reports the faulting RIP, which for any
-store through `vm_write32` is inside the accessor. Teaching it to resolve the
-*guest caller* (the runtime already does this for `LBP_WW` via
-`ppu_prof_resolve_host(__builtin_return_address(0))`) would name the store on
-the first hit. That is a handful of lines in `ppu_guard_page`'s handler.
+### Both Writers, Named
+
+The guard already dumped a guest call stack on a watched-line hit; it just did
+not print the writing routine's **live arguments** unless the watched word went
+to zero. [ps3recomp#99](https://github.com/sp00nznet/ps3recomp/pull/99) removes
+that restriction, and the answer falls out immediately. Two initialisers write
+the same memory, both reached from the same CRT sequencer `func_00010368`:
+
+```
+1. the allocator pool                     r3=0x200065E8 r4=0x010E3760 r5=0x00000018
+   _start -> func_00010368 -> func_00010200 -> func_000119B8
+          -> func_008B0F10 -> func_008B02B8
+
+2. a 1 MB, 64 KB-aligned arena setup      r3=0xFFFFF984 r4=0x00010000 r5=0x00100000
+   _start -> func_00010368 -> func_000107F8 -> func_00011A28 -> func_00013D10
+          -> func_00013EF0 -> func_00668390 -> func_009BFEF8 -> func_009BFCD0
+          -> func_009C02A8 -> func_009DA12C
+```
+
+The first builds the size-class table. The second — the CRT heap initialiser,
+`func_009BFEF8` passes it `size=0x100000, align=1920` — runs afterwards and
+writes over it. That is what leaves `owner` and `size` reading `-1`.
+
+**Next step, precisely:** work out why those two run in that order, or why their
+ranges overlap. On hardware the heap has to exist before anything allocates from
+it, so one of the two is being reached wrongly — and both are entered from
+`func_00010368`, at different call sites. That function is where to look.
 
 Ruled out along the way, each of which was a plausible suspect:
 
