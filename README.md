@@ -392,10 +392,40 @@ called — so those frames are an *inlined* callee being attributed to its host
 function, not a real call chain. The frames below `func_009BFCD0` are reliable;
 the two above it are a compiler artefact.
 
-**Next step, precisely:** bracket the fill. Arm the guard on pages below and
-above `0x20006000` to find where it actually starts and stops. A fill's true
-base and length name what the code thought it was clearing, and that is one
-number to compare against what the guest was given.
+### The Fill, Measured
+
+`GT5P_CANARY_ARM=<call#>:<page>` arms the guard on any page at a chosen call, so
+the fill can be bracketed a page at a time:
+
+```
+0x20002000    3 writes  (ordinary stores, not the fill)
+0x20003000 2048 writes  0x20003000 .. 0x20003FFE
+0x20004000 2048 writes  0x20004000 .. 0x20004FFE
+0x20005000 2048 writes  0x20005000 .. 0x20005FFE
+0x20006000 2048 writes  0x20006000 .. 0x20006FFE
+0x20007000    0 writes
+```
+
+**Exactly `0x20003000..0x20007000` — 16 KB, page-aligned, halfword stores of
+`0xFFFF`.** The live registers at the store carry `0xFFFFFFFF` as the fill value
+alongside `1920` and `0x1E00`.
+
+16 KB of `-1` is 4096 four-byte entries, and 4096 is 256 MB ÷ 64 KB: this is an
+EA → IO-offset table, one entry per 64 KB page of the RSX IO window, initialised
+to "unmapped". ps3recomp's `cellGcmSys` keeps the same table, and memsets its own
+copy to `0xFF` for the same reason.
+
+**And nothing ever allocated that memory.** Across 495 logged allocations, none
+returns an address in `0x20002000..0x20003FFF`, and there is no 16 KB allocation
+at all before the fill. So the guest is filling a table at an address it was
+*handed*, not one it owns — and that address sits in the middle of its own heap,
+on top of the allocator pool.
+
+**Next step, precisely:** find where `0x20003000` comes from. It is
+`heap_base + 0x3000`, and in this setup path the only places the runtime hands
+the guest an address are `_cellGcmInitBody`'s output context (`ctx_out =
+0x011B5A00`) and `cellGcmGetConfiguration`. Compare what we write into those
+structs against the fields the guest reads back.
 
 ### The Fingerprint Is Not FNV-1a-64
 

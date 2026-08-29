@@ -75,16 +75,20 @@ void canary_check(unsigned seq, const char* who)
      * whenever it happens. Set this to the last call at which the word was
      * still correct. */
     {
-        static long arm_at = -1;
+        static long     arm_at = -1;
+        static uint32_t arm_addr;
         if (arm_at < 0) {
             const char* e = getenv("GT5P_CANARY_ARM");
-            arm_at = e ? atol(e) : 0;
+            unsigned long a = 0; unsigned g = 0;
+            int n = e ? sscanf(e, "%lu:%x", &a, &g) : 0;
+            arm_at   = n >= 1 ? (long)a : 0;
+            arm_addr = n >= 2 ? g : addr;   /* default: guard the canary itself */
         }
         if (arm_at > 0 && (long)seq == arm_at) {
             fprintf(stderr, "[canary] arming page guard on 0x%08X at call #%u\n",
-                    addr, seq);
+                    arm_addr, seq);
             fflush(stderr);
-            ppu_guard_page(addr);
+            ppu_guard_page(arm_addr);
         }
     }
 
