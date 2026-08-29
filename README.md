@@ -174,12 +174,29 @@ The heap descriptor says where it should be:
 `base` and `limit` are right — the 174 MB region. `current` is `0x652D6E70`,
 far outside `[base, limit)`.
 
-Finding who put it there is the open question. The PPU store watch sees exactly
-one write to that word for the whole boot — `0x20000000`, from the heap's own
-initialiser — and never sees it change. A page guard on the word catches 2,221
-writes into its page and none of them to that offset. So it is being changed by
-something neither probe sees: a host-side write, or a store that slips through
-the guard's single-step re-arm window while fifteen threads run.
+Walking back from there, the free-list node the allocator carves from carries an
+end pointer of **`0x42C80000`** — which is `100.0f`. `func_0094F6E8` splits a
+block by taking `[node+4]` as the block's end, and every subsequent return is
+that value minus the running total. The allocator itself knows the value is
+wrong: the very next instruction is
+
+```
+lwz    r0, 0x8(r3)      # heap->limit = 0x2ADFFF80
+cmplw  cr7, r0, r9      # r9 = 0x42C80000
+blelr  cr7              # limit <= end -> bail out, skip the back-link
+```
+
+so it bails and leaves the list half-linked rather than rejecting the block.
+
+Two facts bound the search. The game makes exactly one `sys_memory_allocate` in
+the whole boot — `size=0x100000, flags=0x400` — and gets `0x40000000`, which is
+the `ioAddr` `cellGcmInit` is then called with, so that part is consistent.
+And `0x42C80000` propagates node to node: each split writes the previous node's
+end into the new one, so the `[ww]` watch catches the copy, not the origin.
+
+Next step is to find where `100.0f` first lands in `[0x20000000, 0x20100000)`
+rather than watching one node, since the value is distinctive enough to scan
+for.
 
 ### Older Findings
 
