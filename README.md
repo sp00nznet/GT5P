@@ -395,6 +395,24 @@ which makes the base a variable a port can set. `src/main.cpp` moves it to
 commits. With that in place the pool survives the whole boot — a canary on the
 corrupted word never fires — and the main thread progresses past the livelock.
 
+### The Next Wall
+
+Main no longer livelocks; it blocks. From ~20 s on it sits at
+`func_006CD570+0x2C`, which is `bl` to the `sys_lwmutex_lock` import with
+`r3 = jobchain + 0x200`:
+
+```
+func_006CD570 -> func_006C5B60 -> func_006C5C2C -> func_006C5CF8
+              -> func_006C2D5C -> ... -> func_006952A8 -> func_00693440 -> main
+```
+
+The mutex at `0x20039980` reads `owner=6, recursive_count=1` — a guest worker
+thread holds the job chain's lock and never gives it back. The title runs 14
+Create → JobGuardInitialize → Kick cycles and 8 Joins over a boot, and
+`cellSpursShutdownJobChain` (NID `0x738E40E6`) is **unresolved** — faked
+`CELL_OK` 13 times. A shutdown that does nothing, followed by a join that waits
+on state the shutdown should have settled, is the obvious next thing to check.
+
 ### How It Was Found
 
 Worth recording, because none of the ordinary tools could see this write.
