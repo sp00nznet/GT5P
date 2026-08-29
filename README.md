@@ -28,17 +28,16 @@ RSX pipeline built by the studio that cared most about it, and Polyphony's own
 packed filesystem holding 1.8 GB of assets. Tokyo Jungle, the previous most
 complex target, is 7,924 functions.
 
-## Status: Phase 10 — A Window, No Pixels Yet
+## Status: Phase 11 — The RSX Is Configured
 
-> There is a window, and the boot no longer livelocks. The runtime was
-> publishing its GCM offset tables into `0x20003000..0x20007000` — inside the
-> 174 MB heap this title maps at `0x20000000` — and destroying the allocator's
-> size-class table, which wedged the main thread two million iterations deep for
-> the whole boot. Fixed in
-> [ps3recomp#104](https://github.com/sp00nznet/ps3recomp/pull/104); the port now
-> moves that window to `0x03000000`. Main runs on, but `put` still does not
-> advance and only `PARAM.SFO` is ever opened, so there is a next wall and no
-> pixels yet.
+> The main thread now reaches graphics setup. `cellGcmInit(cmdSize=0x10000,
+> ioSize=0x100000, ioAddr=0x40000000)`, `cellGcmMapMainMemory(0x20000000, 174
+> MB)`, six tile regions, zcull, two 1280×720 display buffers, and a first
+> `cellGcmSetPrepareFlip(0)`. It got there because the SPURS completion event
+> was throwing away the one field the game reads from it — see
+> [The Audio Loop That Could Not Count](#the-audio-loop-that-could-not-count).
+> `put` still sits at `0x10040`, no asset is loaded yet, and the boot ends in an
+> `operator new` retry loop, so there are still no pixels.
 
 | Milestone | Status |
 |-----------|--------|
@@ -51,15 +50,138 @@ complex target, is 7,924 functions.
 | Project scaffold & build system | **Done** — clang-cl + Ninja, 70 MB executable |
 | ELF loading & VM setup | **Done** — segments, PT_TLS, OPD entry, fault-commit |
 | CRT initialisation | **Done** — TLS block, `r13`, argv/envp |
-| LV2 syscall dispatch | **Done** — full table, 5 guest threads run |
+| LV2 syscall dispatch | **Done** — full table, 15 guest threads run |
 | SPU lifting | **Done** — 12 images, 4,328 functions, zero dispatch misses |
-| SPURS job chains | **Done** — created, kicked, walked, completion signalled |
-| Audio (`cellAudio` → WASAPI) | **Partial** — pipeline up, mixing thread runs, no output device |
+| SPURS job chains | **Done** — created, kicked, walked, per-job completion signalled |
+| RSX configuration | **Done** — GCM init, main-memory map, tiles, zcull, display buffers |
+| Audio (`cellAudio` → WASAPI) | **Partial** — SGX service loop runs to completion, no output device |
 | Input (`cellPad` → XInput) | **Partial** — `cellPadInit` reached |
 | Filesystem | **Partial** — `PARAM.SFO` opens and reads; no asset loads yet |
-| Graphics (RSX → D3D12) | **Partial** — window opens, FIFO drains once, no flip ever requested |
+| Graphics (RSX → D3D12) | **Partial** — configured, but `put` never advances past `0x10040` |
 | Present / vblank ticker | **Done** — `src/gt5p_present.cpp`, 60 Hz |
 | PDIPFS asset loading | Not started |
+
+### The Audio Loop That Could Not Count
+
+The whole boot hung behind one thread. `sgx-audio-thr` held the job chain's
+lightweight mutex at `jobchain + 0x200` and never released it, so the main
+thread sat in `sys_lwmutex_lock` for the rest of the run — 10.4 seconds and
+counting, with the guest-side owner field naming the audio thread the entire
+time.
+
+It was not stuck. It was looping, and its loop is this:
+
+```
+func_006CEC74(obj):
+    lock is already held by the caller
+    do {
+        cellSpursJobGuardNotify(obj + 0x180)
+        sys_event_queue_receive(obj->queue)      // r6 = event data2
+        i = data2
+        if (obj->callback[i]) obj->callback[i](obj->arg0[i], obj->arg1[i])
+    } while (i + 1 < obj->queued)
+    sys_lwmutex_unlock(obj + 0x200)
+```
+
+`data2` is *which job finished*. Our SPURS pushed the completion event with
+`data2` hardcoded to zero:
+
+```c
+u64 d2 = 0, d3 = 0;
+if (g_spurs_job_mbox_valid) { d2 = ...; d3 = ...; }   /* computed */
+sys_event_queue_push_by_id(q, SPURS_EVENT_PORT, jc_ea, 0, probe());
+                                                    /* ...and dropped */
+```
+
+`d2` and `d3` were computed from the SPU's outbound mailbox and then never
+passed. With `data2` always 0, `i` is pinned at 0, `i + 1 < 2` is always true,
+and the loop runs forever: **151,685 receives in 25 seconds, 214,702 SPU job
+dispatches, no progress** — all with the mutex held.
+
+The event now carries the mailbox value when the SPU produced one, and the job's
+ordinal in the chain otherwise, which is exactly what that loop counts.
+[ps3recomp#98](https://github.com/sp00nznet/ps3recomp/pull/98).
+
+That one field was worth the whole graphics stack.
+
+### A Detour That Was Not the Cause
+
+`cellSpursShutdownJobChain` (NID `0x738E40E6`) was also unregistered and faked
+`CELL_OK` thirteen times a boot, which made it the obvious suspect for a chain
+that would not tear down. It is implemented now — chains carry a shutdown flag,
+`jc_execute` honours it wherever the walk has reached, and Shutdown signals
+completion so a parked thread wakes.
+
+It did not move the boot at all. The NID was genuinely missing, which is why it
+is in the PR, but the hang it was reached from had a different cause. Recorded
+here because a negative result that cost a build cycle is worth the same line in
+the log as a positive one.
+
+### 363,577 Writes to Address Zero
+
+With the audio chain finally running, its second job (`image 7`, fingerprint
+`0xBE66D8D2210CDCD4`) turned out to be spilling its entire local store to guest
+EA `0x0000` on every single pass — LS `0x0000`/`0x4000`/`0x8000` to EA
+`0x0000`/`0x4000`/`0x8000`, 34 KB a lap. Of 364,600 SPU DMA PUTs in a 40 second
+boot, 363,577 went to the null page:
+
+| before | | after | |
+|---|---|---|---|
+| `ea 0x00000000` | 363,577 | `ea 0x01000000` | 197 |
+| `ea 0x01000000` | 1,020 | `ea 0x20000000` | 3 |
+| `ea 0x20000000` | 3 | | |
+
+lv2 reserves the low 64 KB; an EA that small means the descriptor field holding
+the real destination arrived as zero. ps3recomp already rejects malformed MFC
+transfers for the same reason, so this joins them
+([ps3recomp#107](https://github.com/sp00nznet/ps3recomp/pull/107)). The job
+still reads its inputs from the wrong place — it also issues GETs from EAs like
+`0x7801C102` — but the histogram is now readable, which it was not before.
+
+### The Next Wall: a Heap That Grew Out of Its Own Region
+
+The boot now ends in `operator new` retrying forever:
+
+```
+func_00951FA8(size):
+    for (;;) {
+        p = alloc(size);  if (p) return p;
+        sys_timer_usleep(2000);          // func_00947F28
+    }
+```
+
+A 264-byte (`0x108`) allocation fails 2,198 times in a run. The failure is not
+the interesting part — the three allocations before it are:
+
+```
+func_0094FF30(heap=0x011806B0, size=0x37000, align=0x40) -> 0x42C49000
+func_0094FF30(heap=0x011806B0, size=0x37000, align=0x40) -> 0x42C11FC0
+func_0094FF30(heap=0x011806B0, size=0x29521, align=0x10) -> 0x42BE8A80
+```
+
+Those succeed, and they are a perfectly well-behaved downward bump allocator:
+each return is the previous one minus the requested size plus the alignment.
+They are simply bumping through `0x42Cxxxxx` — 1.1 GB in, where this title has
+no memory at all. Read as floats they are 98.28, 96.56 and 95.27.
+
+The heap descriptor says where it should be:
+
+```
+0x011806B0: 00F76D48 20000000 2ADFFF80 652D6E70
+            vtable   base     limit    current
+```
+
+`base` and `limit` are right — the 174 MB region. `current` is `0x652D6E70`,
+far outside `[base, limit)`.
+
+Finding who put it there is the open question. The PPU store watch sees exactly
+one write to that word for the whole boot — `0x20000000`, from the heap's own
+initialiser — and never sees it change. A page guard on the word catches 2,221
+writes into its page and none of them to that offset. So it is being changed by
+something neither probe sees: a host-side write, or a store that slips through
+the guard's single-step re-arm window while fifteen threads run.
+
+### Older Findings
 
 ### What the Binary Looks Like
 

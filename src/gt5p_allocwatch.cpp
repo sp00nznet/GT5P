@@ -126,8 +126,34 @@ extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
     if (!lvl) return;
 
     /* func_0094FF30(heap, size, align) -> block. A zero return is a failed
-     * allocation and owns no range. */
+     * allocation and owns no range -- so it is not tracked for overlap, but at
+     * level 2 it is still the most interesting line in the log: this title's
+     * operator new retries a failed allocation forever (alloc, usleep(2000),
+     * alloc, ...), and dropping the zero returns hid the whole loop. */
+    /* The failure that matters is upstream of the zero return: two 5 MB
+     * requests come back as 0x426E8A70 / 0x421E8A60 -- 1.1 GB in, where this
+     * title has no memory at all -- and the next request is for 0x9AD29180
+     * bytes. Read as floats those are 59.6353, 39.6353 and a denormal: the
+     * block headers are carrying somebody's vertex data, not link pointers.
+     * Catch the first handful of impossible returns/sizes with a guest stack,
+     * which names the caller walking the corrupted list. The bound is this
+     * title's map: 174 MB at 0x20000000, plus the ELF low. */
+    const bool returns_ptr = strstr(who, "0094FF30") || strstr(who, "00937EF0");
+    if (returns_ptr && ret && (ret < 0x00010000u || ret >= 0x2AE00000u)) {
+        static int n = 0;
+        if (n++ < 4) {
+            fprintf(stderr, "[alloc] IMPOSSIBLE return %s(a3=0x%08X a4=0x%08X "
+                            "a5=0x%08X) -> 0x%08X (%.4f as float)\n",
+                    who, a3, a4, a5, ret, (double)*(const float*)&ret);
+            ppu_guest_callstack("alloc-impossible");
+            fflush(stderr);
+        }
+    }
+
     uint32_t size = a4;
+    if (lvl >= 2 && !ret)
+        fprintf(stderr, "[alloc] FAIL %s(a3=0x%08X a4=0x%08X a5=0x%08X) -> 0\n",
+                who, a3, a4, a5);
     if (!ret || !size) return;
 
 #ifdef _WIN32

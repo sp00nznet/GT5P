@@ -29,6 +29,8 @@
  * address of its last syscall/HLE call. "Runs its job loop but never loads
  * anything" is exactly the shape a wedged worker produces, and nothing else
  * shows which thread is where. */
+extern "C" const char* g_hle_inflight[];
+
 static void dump_threads(void)
 {
     static int on = -1;
@@ -45,9 +47,11 @@ static void dump_threads(void)
     for (int i = 0; i < PPU_THREAD_MAX; i++) {
         const ppu_thread_info* t = &g_ppu_threads[i];
         if (t->state == PPU_THREAD_STATE_FREE) continue;
-        fprintf(stderr, "   tid=%d %-9s entry=0x%08llX prof_pc=0x%08X name=\"%s\"\n",
+        fprintf(stderr, "   tid=%d %-9s entry=0x%08llX prof_pc=0x%08X hle=%-26s name=\"%s\"\n",
                 i, kState[t->state & 3],
-                (unsigned long long)t->entry_addr, t->prof_pc, t->name);
+                (unsigned long long)t->entry_addr, t->prof_pc,
+                (i < 64 && g_hle_inflight[i]) ? g_hle_inflight[i] : "-",
+                t->name);
     }
 }
 
