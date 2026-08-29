@@ -57,6 +57,7 @@ void cellfs_set_root_path(const char* root);
 void cellfs_add_path_mapping(const char* ps3_prefix, const char* host_path);
 void vm_write32(uint64_t addr, uint32_t val);   /* big-endian guest store */
 uint32_t vm_read32(uint64_t addr);
+extern uint32_t ppu_hle_inject_base;      /* HLE-visible GCM window base */
 uint32_t ppu_prof_resolve_host(void* ra);  /* host RIP -> guest function addr */
 int  ppu_stwcx32(uint64_t ea, uint32_t expected, uint32_t val);
 void ps3_indirect_call(ppu_context* ctx);
@@ -382,6 +383,14 @@ int main(int argc, char* argv[])
         AddVectoredExceptionHandler(1, fault_commit);
     SetUnhandledExceptionFilter(report_crash);
 #endif
+
+    /* Move the HLE-visible GCM window (labels, control register, and the 16 KB
+     * of offset tables) off this title's heap. NPUA80075 maps 174 MB at
+     * 0x20000000 -- the runtime's default base -- and publishing the offset
+     * tables there overwrote the CRT allocator's size-class pool, which wedged
+     * the main thread in a livelock for the whole boot. 0x03000000 is free
+     * here, and main() commits it below. Must be set before any guest code. */
+    ppu_hle_inject_base = GT5P_GCM_CTRL_BASE;
 
     if (int32_t rc = vm_init()) {
         fprintf(stderr, "[GT5P] ERROR: VM init failed (0x%08X)\n", (unsigned)rc);

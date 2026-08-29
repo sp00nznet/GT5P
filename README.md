@@ -30,13 +30,15 @@ complex target, is 7,924 functions.
 
 ## Status: Phase 10 — A Window, No Pixels Yet
 
-> There is a window: the RSX → D3D12 backend comes up and a 60 Hz vblank/flip
-> ticker drives it. There is nothing in the window. The guest writes one 64 KB
-> command buffer during `cellGcmSys` init, the FIFO drains it, and `put` never
-> moves again — because the **main thread wedges before it reaches its render
-> loop**, spinning on an atomic increment whose target address is `0xCCCCCCD4`:
-> the allocator's uninitialised-memory fill pattern. Every one of its general
-> registers holds that value. Everything else keeps running around it.
+> There is a window, and the boot no longer livelocks. The runtime was
+> publishing its GCM offset tables into `0x20003000..0x20007000` — inside the
+> 174 MB heap this title maps at `0x20000000` — and destroying the allocator's
+> size-class table, which wedged the main thread two million iterations deep for
+> the whole boot. Fixed in
+> [ps3recomp#104](https://github.com/sp00nznet/ps3recomp/pull/104); the port now
+> moves that window to `0x03000000`. Main runs on, but `put` still does not
+> advance and only `PARAM.SFO` is ever opened, so there is a next wall and no
+> pixels yet.
 
 | Milestone | Status |
 |-----------|--------|
@@ -362,70 +364,59 @@ lifted code that has no entry of its own is silently attributed to whatever
 comes before it. `func_009C0098` and `func_009C02A8` both appeared in these
 chains repeatedly and are, on instrumenting them, **never called**.
 
-### The Store, Caught
+### Found It: the Runtime Was Writing on the Game's Heap
 
-`GT5P_CANARY_ARM=<call#>` write-protects the canary's page at a chosen call.
-Pointed at #576 — the last call at which the word was still correct — the guard
-caught the store itself:
+The corruption is `ps3recomp` publishing its GCM bookkeeping into memory this
+title owns.
 
-```
-[GUARD] WRITE guest=0x20006000 from RIP rva=0x4318C1B
-[GUARD] WRITE guest=0x20006002 from RIP rva=0x4318C1B
-[GUARD] WRITE guest=0x20006004 from RIP rva=0x4318C1B
-...  2048 of them, stride 2, one RIP
-[GCS] func_009DA0A0+0x929 -> func_009C0098+0x727 -> func_009BFCD0+0xAA2
-      -> func_009BFEF8+0x63 -> func_00668390+0x179 -> ... -> main
-```
-
-**2048 halfword stores at stride 2** — a `sth` fill loop — covering the entire
-guarded page `0x20006000..0x20007000`, from a single instruction, during GCM
-setup. The guard only protects one page, so that is a lower bound: the fill
-starts at or below `0x20006000` and runs at least 4 KB.
-
-So this was never a stray pointer. It is a **bulk fill with a base or a length
-that is wrong**, and the allocator pool at `0x200063D0`–`0x20006A98` simply
-happens to be inside it.
-
-A caveat on the chain above: `func_009C0098` and `func_009DA0A0` both have their
-own function-table entries, and instrumenting `func_009C0098` shows it is never
-called — so those frames are an *inlined* callee being attributed to its host
-function, not a real call chain. The frames below `func_009BFCD0` are reliable;
-the two above it are a compiler artefact.
-
-### The Fill, Measured
-
-`GT5P_CANARY_ARM=<call#>:<page>` arms the guard on any page at a chosen call, so
-the fill can be bracketed a page at a time:
+`VM_HLE_INJECT_BASE` is where `cellGcmSys` puts the label block, the control
+register, and the two 4096-entry offset tables the guest reads through
+`cellGcmGetOffsetTable` — 0x8000 bytes the runtime writes without the title
+knowing. It was `0x03000000` until flOw's heap grew over it, then `0x20000000`.
+And GT5P maps its own 174 MB heap exactly there:
 
 ```
-0x20002000    3 writes  (ordinary stores, not the fill)
-0x20003000 2048 writes  0x20003000 .. 0x20003FFE
-0x20004000 2048 writes  0x20004000 .. 0x20004FFE
-0x20005000 2048 writes  0x20005000 .. 0x20005FFE
-0x20006000 2048 writes  0x20006000 .. 0x20006FFE
-0x20007000    0 writes
+[cellGcmSys] MapMainMemory(ea=0x20000000, size=0xAE00000)
 ```
 
-**Exactly `0x20003000..0x20007000` — 16 KB, page-aligned, halfword stores of
-`0xFFFF`.** The live registers at the store carry `0xFFFFFFFF` as the fill value
-alongside `1920` and `0x1E00`.
+So every `gcm_publish_offset_tables()` wrote 16 KB of `0xFFFF` through the
+game's allocations at `0x20003000..0x20007000` — which is precisely the range,
+the value, and the halfword granularity the page guard measured.
 
-16 KB of `-1` is 4096 four-byte entries, and 4096 is 256 MB ÷ 64 KB: this is an
-EA → IO-offset table, one entry per 64 KB page of the RSX IO window, initialised
-to "unmapped". ps3recomp's `cellGcmSys` keeps the same table, and memsets its own
-copy to `0xFF` for the same reason.
+It landed on the allocator's size-class table. Entry 5's `size` read `-1`
+instead of `0x18`, `func_008B0920`'s only test is `size == 0` ("class unused,
+use the general allocator"), so it never took that branch — it popped from a
+free list whose links were garbage, returned poisoned pointers, and the main
+thread livelocked two million iterations deep for the entire boot.
 
-**And nothing ever allocated that memory.** Across 495 logged allocations, none
-returns an address in `0x20002000..0x20003FFF`, and there is no 16 KB allocation
-at all before the fill. So the guest is filling a table at an address it was
-*handed*, not one it owns — and that address sits in the middle of its own heap,
-on top of the allocator pool.
+**Fixed in [ps3recomp#104](https://github.com/sp00nznet/ps3recomp/pull/104)**,
+which makes the base a variable a port can set. `src/main.cpp` moves it to
+`0x03000000`, a range this title never touches and which the port already
+commits. With that in place the pool survives the whole boot — a canary on the
+corrupted word never fires — and the main thread progresses past the livelock.
 
-**Next step, precisely:** find where `0x20003000` comes from. It is
-`heap_base + 0x3000`, and in this setup path the only places the runtime hands
-the guest an address are `_cellGcmInitBody`'s output context (`ctx_out =
-0x011B5A00`) and `cellGcmGetConfiguration`. Compare what we write into those
-structs against the fields the guest reads back.
+### How It Was Found
+
+Worth recording, because none of the ordinary tools could see this write.
+
+The store is **host-side**, so `LBP_WW` and every other store watch are blind to
+it. The page guard can see it, but only if it is armed at the right instant — so
+`src/gt5p_allocwatch.cpp` grew a canary: `GT5P_CANARY=<addr>:<expected>` checks
+a word on every wrapped call **on the writing thread**, arms once the word
+first reaches its expected value, and reports the exact call after which it
+changed. That gave "correct at call #138, wrong by #577" with no cross-thread
+ambiguity. `GT5P_CANARY_ARM=<call#>[:<page>]` then write-protects any page at
+that call, which caught the store itself and let it be bracketed page by page to
+exactly `0x20003000..0x20007000`.
+
+Two things cost real time and are worth knowing:
+
+- `ppu_prof_resolve_host` maps a host address to the **nearest preceding**
+  function-table entry, so a frame in code with no entry of its own is silently
+  attributed to whatever comes before it. `func_009C0098` and `func_009C02A8`
+  appeared in these chains repeatedly and are never called.
+- The page guard captures the writing routine's registers **mid-function**, not
+  at entry, so reading them as arguments produces confident nonsense.
 
 ### The Fingerprint Is Not FNV-1a-64
 
@@ -516,9 +507,11 @@ Native x86-64 executable
 
 - **Python** 3.10+ and `pip install -r requirements.txt`
 - **ps3recomp** — clone from [sp00nznet/ps3recomp](https://github.com/sp00nznet/ps3recomp).
-  Currently needs [#98](https://github.com/sp00nznet/ps3recomp/pull/98) (SPURS
-  job chains) and [#97](https://github.com/sp00nznet/ps3recomp/pull/97)
-  (`pkg_extract` directory tree).
+  Currently needs [#104](https://github.com/sp00nznet/ps3recomp/pull/104)
+  (movable HLE window — without it this title cannot boot),
+  [#98](https://github.com/sp00nznet/ps3recomp/pull/98) (SPURS job chains),
+  [#99](https://github.com/sp00nznet/ps3recomp/pull/99) (guard live args) and
+  [#97](https://github.com/sp00nznet/ps3recomp/pull/97) (`pkg_extract` tree).
 - **ps3sce** (or scetool) for the SELF segment decrypt
 - **A legitimate copy of Gran Turismo 5 Prologue** (NPUA80075) — the PSN package
   and its RAP. You must legally own the game; nothing here is included.
