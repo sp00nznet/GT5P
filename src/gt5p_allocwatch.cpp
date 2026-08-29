@@ -54,6 +54,7 @@ int watch_level()
  * wrong at #N+1" is exact. */
 extern "C" uint32_t vm_read32(uint64_t addr);
 extern "C" void ppu_guest_callstack(const char* tag);
+extern "C" void ppu_guard_page(uint32_t guest_ea);
 
 namespace {
 void canary_check(unsigned seq, const char* who)
@@ -66,6 +67,27 @@ void canary_check(unsigned seq, const char* who)
         armed = (e && sscanf(e, "%x:%x", &addr, &want) == 2) ? 1 : 0;
     }
     if (armed <= 0 || broken) return;
+
+    /* GT5P_CANARY_ARM=<call#>: write-protect the canary's page at that call.
+     * The canary itself only notices damage at the *next* wrapped call, on
+     * whichever thread happens to make it — which is the wrong thread to ask
+     * for a backtrace. The page guard catches the actual store, wherever and
+     * whenever it happens. Set this to the last call at which the word was
+     * still correct. */
+    {
+        static long arm_at = -1;
+        if (arm_at < 0) {
+            const char* e = getenv("GT5P_CANARY_ARM");
+            arm_at = e ? atol(e) : 0;
+        }
+        if (arm_at > 0 && (long)seq == arm_at) {
+            fprintf(stderr, "[canary] arming page guard on 0x%08X at call #%u\n",
+                    addr, seq);
+            fflush(stderr);
+            ppu_guard_page(addr);
+        }
+    }
+
     uint32_t now = vm_read32(addr);
     /* Arm only once the word has actually been set: before that it is simply
      * not written yet, and reporting the pre-init state says nothing. */

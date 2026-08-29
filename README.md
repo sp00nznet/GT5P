@@ -362,10 +362,40 @@ lifted code that has no entry of its own is silently attributed to whatever
 comes before it. `func_009C0098` and `func_009C02A8` both appeared in these
 chains repeatedly and are, on instrumenting them, **never called**.
 
-**Next step, precisely:** `func_009BFCD0` makes about eleven calls before
-`func_009DA12C`. Wrap them all with `scripts/instrument_alloc.py` and let the
-canary bisect — the corruption has to land between two consecutive logged calls.
-That is a bounded search rather than a hunt.
+### The Store, Caught
+
+`GT5P_CANARY_ARM=<call#>` write-protects the canary's page at a chosen call.
+Pointed at #576 — the last call at which the word was still correct — the guard
+caught the store itself:
+
+```
+[GUARD] WRITE guest=0x20006000 from RIP rva=0x4318C1B
+[GUARD] WRITE guest=0x20006002 from RIP rva=0x4318C1B
+[GUARD] WRITE guest=0x20006004 from RIP rva=0x4318C1B
+...  2048 of them, stride 2, one RIP
+[GCS] func_009DA0A0+0x929 -> func_009C0098+0x727 -> func_009BFCD0+0xAA2
+      -> func_009BFEF8+0x63 -> func_00668390+0x179 -> ... -> main
+```
+
+**2048 halfword stores at stride 2** — a `sth` fill loop — covering the entire
+guarded page `0x20006000..0x20007000`, from a single instruction, during GCM
+setup. The guard only protects one page, so that is a lower bound: the fill
+starts at or below `0x20006000` and runs at least 4 KB.
+
+So this was never a stray pointer. It is a **bulk fill with a base or a length
+that is wrong**, and the allocator pool at `0x200063D0`–`0x20006A98` simply
+happens to be inside it.
+
+A caveat on the chain above: `func_009C0098` and `func_009DA0A0` both have their
+own function-table entries, and instrumenting `func_009C0098` shows it is never
+called — so those frames are an *inlined* callee being attributed to its host
+function, not a real call chain. The frames below `func_009BFCD0` are reliable;
+the two above it are a compiler artefact.
+
+**Next step, precisely:** bracket the fill. Arm the guard on pages below and
+above `0x20006000` to find where it actually starts and stops. A fill's true
+base and length name what the code thought it was clearing, and that is one
+number to compare against what the guest was given.
 
 ### The Fingerprint Is Not FNV-1a-64
 
