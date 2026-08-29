@@ -252,6 +252,7 @@ extern "C" {
     void cellSpursJobGuardNotify(void);
     void cellSpursJobGuardReset(void);
     void cellSpursRunJobChain(void);
+    void cellSpursShutdownJobChain(void);
     void cellSpursJoinJobChain(void);
     void cellSpursJobChainGetError(void);
     void cellSpursKickJobChain(void);
@@ -742,6 +743,7 @@ extern "C" void ppu_hle_register_all(void) {
     ps3_hle_register(0xD5D0B256u, "cellSpursJobGuardNotify", (void*)cellSpursJobGuardNotify);
     ps3_hle_register(0x00AF2519u, "cellSpursJobGuardReset", (void*)cellSpursJobGuardReset);
     ps3_hle_register(0xF31731BBu, "cellSpursRunJobChain", (void*)cellSpursRunJobChain);
+    ps3_hle_register(0x738E40E6u, "cellSpursShutdownJobChain", (void*)cellSpursShutdownJobChain);
     ps3_hle_register(0xA7C066DEu, "cellSpursJoinJobChain", (void*)cellSpursJoinJobChain);
     ps3_hle_register(0x161DA6A7u, "cellSpursJobChainGetError", (void*)cellSpursJobChainGetError);
     ps3_hle_register(0xBFEA60FAu, "cellSpursKickJobChain", (void*)cellSpursKickJobChain);

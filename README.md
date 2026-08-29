@@ -406,12 +406,29 @@ func_006CD570 -> func_006C5B60 -> func_006C5C2C -> func_006C5CF8
               -> func_006C2D5C -> ... -> func_006952A8 -> func_00693440 -> main
 ```
 
-The mutex at `0x20039980` reads `owner=6, recursive_count=1` — a guest worker
-thread holds the job chain's lock and never gives it back. The title runs 14
-Create → JobGuardInitialize → Kick cycles and 8 Joins over a boot, and
-`cellSpursShutdownJobChain` (NID `0x738E40E6`) is **unresolved** — faked
-`CELL_OK` 13 times. A shutdown that does nothing, followed by a join that waits
-on state the shutdown should have settled, is the obvious next thing to check.
+The mutex at `0x20039980` reads `owner=6, recursive_count=1`. Guest thread 6 is
+**`sgx-audio-thr`**, sitting at `func_006CEC74` — the SGX audio service loop —
+where it does `JobGuardNotify` then `sys_event_queue_receive`, over and over,
+**holding the chain's lock the whole time**. It is not stuck: it takes 132 laps
+through that loop in 40 s and 214,702 SPU jobs dispatch behind it. It simply
+never lets go, and main can never get in to tear the chain down.
+
+`cellSpursShutdownJobChain` (NID `0x738E40E6`) was **unresolved** — faked
+`CELL_OK` 13 times a boot — so it looked like the obvious culprit. It is now
+implemented ([ps3recomp#98](https://github.com/sp00nznet/ps3recomp/pull/98)):
+the chain carries a shutdown flag, the walker honours it, and Shutdown signals
+completion so a thread parked on the queue wakes. **It does not move this
+title's boot.** The audio thread still holds the lock. Committed because the NID
+was genuinely missing, not because it fixed the case that found it.
+
+Also cleared: `cellGcm_fifo_recycle` is never entered (`GCM_RECDBG` prints
+nothing), so `put` sitting at `0x10040` is a consequence of main being blocked,
+not a separate graphics problem.
+
+So the question is narrower than it looks: **what makes that audio loop exit?**
+It waits on an event queue and re-arms; its exit condition is some guest state
+that only the teardown path sets — and the teardown path is what is blocked
+behind it.
 
 ### How It Was Found
 
