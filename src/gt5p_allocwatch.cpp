@@ -181,12 +181,27 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
      * vtable+0x24 is its completion side. Main parks in the wait and the PDI
      * workers do signal its condvar, so it wakes, re-checks and sleeps again:
      * the load is not finishing. Print the state each time through. */
+    /* func_0091B638 is the one state transition that actually runs (66 times a
+     * boot). Print which object it advances and from what -- main waits on ONE
+     * FileDelayLoad, and the question is whether that one is ever among them. */
+    if (strstr(who, "0091B8A8"))
+        fprintf(stderr, "[dload] ctor obj=0x%08X\n", a3_);
+
+    if (strstr(who, "0091B638")) {
+        static int n = 0;
+        if (n++ < 12)
+            fprintf(stderr, "[dload] step obj=0x%08X state=%u\n",
+                    a3_, vm_read32(a3_ + 0x8C));
+    }
+
     if (strstr(who, "0091BBA8") || strstr(who, "0091BAD8")) {
         static int n = 0;
         if (n++ < 20)
             fprintf(stderr, "[dload] %s obj=0x%08X state=%u err=0x%08X\n",
                     strstr(who, "0091BBA8") ? "wait" : "complete",
                     a3_, vm_read32(a3_ + 0x8C), vm_read32(a3_ + 0xD4));
+            ppu_guest_callstack("dload");
+            fflush(stderr);
     }
 
     if (strstr(who, "00014B58")) g_in_fsinit = 1;
