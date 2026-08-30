@@ -381,7 +381,7 @@ OPD 0x01025518 -> func_0093C480   <- code pointer became 0x3000C480
 OPD 0x01025520 -> func_0093C778
 ```
 
-`"BLES00000 "` is ten bytes: it destroyed one entry outright and truncated the
+`"BLES00000\0"` is ten bytes: it destroyed one entry outright and truncated the
 next. Any indirect call through either landed in nowhere.
 
 Fixed in [ps3recomp#109](https://github.com/sp00nznet/ps3recomp/pull/109), and
@@ -419,8 +419,24 @@ filesystem. Instrumented, the pump's entire life is one millisecond:
 [pump] LEAVE func_00013060                (same millisecond)
 ```
 
-It never reaches the resource lookup. There is nothing to run, because there is
-nothing mounted: the two functions that build the mount path
+**Correction to a first reading of this.** That probe only logged calls which
+returned non-zero *and* had a non-zero `r4`, so a void call with a stale `r4` of
+zero vanished from the log — which made the pump look like it bailed on the spot.
+Traced unconditionally from the pre-hook it makes **45 calls**: it registers
+script symbols (`setSignalHandler`, `setRemainMaxTime`, `MRaceDisplayFace`),
+builds the path as a `std::string`, and ends with
+
+```
+func_00838688(hModule=0x2AA3092C, &"scripts/gt5p/Application")
+```
+
+`hModule` is the script VM's module handle — RTTI puts `hAny` and `hCode` either
+side of it. So the script system is up and is genuinely asked for the application
+script. It comes back with nothing, the pump destructs its two RAII guards, and
+returns. (`func_00A03150`, which the first pass took for the lookup, is `strlen`
+— word-at-a-time zero detection, `cntlzd`, the lot.)
+
+It comes back with nothing because there is nothing mounted: the two functions that build the mount path
 `/dev_bdvd/PS3_GAME/USRDIR` + `/` + `PDIPFS` — `func_0002D938` and
 `func_0002E810` — are **never called once** in a boot, and the only file this
 port has ever opened is `PARAM.SFO`.
