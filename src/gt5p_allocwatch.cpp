@@ -131,6 +131,9 @@ void canary_check(unsigned seq, const char* who)
  * chain is confirmed end to end and the remaining work is the count mismatch
  * alone. If it does not, something else is also wrong and this rules it in.
  */
+static volatile long g_in_pump;   /* set while func_00013060 runs */
+static volatile long g_in_fsinit; /* set while func_00014B58 runs */
+
 extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
                                    uint32_t a4, uint32_t /*a5*/)
 {
@@ -170,7 +173,14 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
      * the AdvertiseSimplePS3 object" and "wait for it to finish", so it is what
      * has to drive the object to completion. It returns, and the object is
      * still busy -- so the question is whether it loops at all. */
+    /* func_00014B58 is the filesystem setup: it reads settings through
+     * func_00013C98, compares them with strcmp, and four branches decide which
+     * file devices get created. strcmp is called constantly elsewhere, so only
+     * look while this function is on the stack. */
+    if (strstr(who, "00014B58")) g_in_fsinit = 1;
+
     if (strstr(who, "00013060")) {
+        g_in_pump = 1;
         fprintf(stderr, "[pump] ENTER func_00013060(r3=0x%08X) t=%llu ms\n",
                 a3_, (unsigned long long)GetTickCount64());
         fflush(stderr);
@@ -180,6 +190,63 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
      * attract pump calls it eight times on the way out. Print what it is being
      * handed: the game's own account of why it gave up is worth more than any
      * amount of further disassembly. */
+    /* func_009FF5B0(dst, src) is strcpy. The script-module resolve composes its
+     * result through a chain of these into short-lived heap strings, which are
+     * already freed by the time anything can peek at them -- so read the source
+     * live, at the call. */
+    if (strstr(who, "009FF5B0") && a4 && g_in_pump) {
+        static int n = 0;
+        if (n++ < 200) {
+            char buf[128]; unsigned i = 0;
+            for (; i < sizeof buf - 1; i++) {
+                uint32_t w = vm_read32((a4 + i) & ~3u);
+                char c = (char)((w >> (8 * (3 - ((a4 + i) & 3)))) & 0xFF);
+                if (!c) break;
+                buf[i] = (c >= 32 && c < 127) ? c : '.';
+            }
+            buf[i] = 0;
+            if (i) fprintf(stderr, "[str] 0x%08X -> 0x%08X \"%s\"\n", a4, a3_, buf);
+        }
+    }
+
+    /* func_007D5268(volume, path) is the resolve inside the script module
+     * loader. Print the object's vtable so scripts/rtti.py can name the class:
+     * knowing WHICH resource system is being asked, and what state it is in,
+     * is the difference between "no volume mounted" and "mounted but empty". */
+    /* The filesystem setup (func_00014B58) is configuration-driven:
+     * func_00013C98 reads a setting, func_00A02BA8 compares it, and four
+     * branches decide which file devices get created. Print the strings. */
+    if (g_in_fsinit && (strstr(who, "00013C98") || strstr(who, "00A02BA8"))) {
+        static int n = 0;
+        if (n++ < 30) {
+            char b3[96], b4[96];
+            for (int k = 0; k < 2; k++) {
+                uint32_t p = k ? a4 : a3_;
+                char* o = k ? b4 : b3; unsigned i2 = 0;
+                if (p >= 0x10000u) {
+                    for (; i2 < 90; i2++) {
+                        uint32_t w = vm_read32((p + i2) & ~3u);
+                        char c = (char)((w >> (8 * (3 - ((p + i2) & 3)))) & 0xFF);
+                        if (!c) break;
+                        o[i2] = (c >= 32 && c < 127) ? c : (char)46;
+                    }
+                }
+                o[i2] = 0;
+            }
+            fprintf(stderr, "[cfg] %s(0x%08X '%s', 0x%08X '%s')\n",
+                    who, a3_, b3, a4, b4);
+        }
+    }
+
+    if (strstr(who, "007D5268")) {
+        static int n = 0;
+        if (n++ < 3)
+            fprintf(stderr, "[resolve] func_007D5268(obj=0x%08X vtable=0x%08X) "
+                            "fields: %08X %08X %08X %08X\n",
+                    a3_, vm_read32(a3_), vm_read32(a3_ + 4), vm_read32(a3_ + 8),
+                    vm_read32(a3_ + 12), vm_read32(a3_ + 16));
+    }
+
     if (strstr(who, "008AF6C8") && a4) {
         static int n = 0;
         if (n++ < 24) {
@@ -229,7 +296,37 @@ extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
                     a3, ret, ret ? vm_read32(ret) : 0);
     }
 
+    /* func_00013C98(name, buf, len) -> found? Print the result AND the buffer
+     * it filled: "found" alone does not say whether the value that came back is
+     * the one the filesystem setup then compares against. */
+    if (strstr(who, "00013C98")) {
+        static int n = 0;
+        if (n++ < 8) {
+            char nm[64], val[64]; unsigned i;
+            for (i = 0; i < 60; i++) {
+                uint32_t w = vm_read32((a3 + i) & ~3u);
+                char c = (char)((w >> (8 * (3 - ((a3 + i) & 3)))) & 0xFF);
+                if (!c) break;
+                nm[i] = (c >= 32 && c < 127) ? c : '.';
+            }
+            nm[i] = 0;
+            for (i = 0; i < 60; i++) {
+                uint32_t w = vm_read32((a4 + i) & ~3u);
+                char c = (char)((w >> (8 * (3 - ((a4 + i) & 3)))) & 0xFF);
+                if (!c) break;
+                val[i] = (c >= 32 && c < 127) ? c : '.';
+            }
+            val[i] = 0;
+            fprintf(stderr, "[cfg] get '%s' -> found=%u value='%s'\n",
+                    nm, ret & 0xFF, val);
+            fflush(stderr);
+        }
+    }
+
+    if (strstr(who, "00014B58")) g_in_fsinit = 0;
+
     if (strstr(who, "00013060")) {
+        g_in_pump = 0;
         fprintf(stderr, "[pump] LEAVE func_00013060 -> 0x%08X t=%llu ms\n",
                 ret, (unsigned long long)GetTickCount64());
         fflush(stderr);

@@ -350,18 +350,74 @@ static void setup_argv(const char* argv0)
     vm_commit(GT5P_ARGV_BASE, 0x10000u);
     memset(vm_base + GT5P_ARGV_BASE, 0, 0x10000u);
 
+    /* argv is an array of 64-bit pointers, not 32-bit.
+     *
+     * The guest CRT's first act (func_00010368) is
+     *
+     *     r10 = argv + 4;  r28 = argv;
+     *     do { r0 = [r10]; [r28] = r0; r10 += 8; r28 += 4; } while (++i < argc);
+     *
+     * -- read at stride 8, write at stride 4, i.e. compact an array of 64-bit
+     * pointers into 32-bit ones by keeping each low half. It does the same to
+     * envp immediately after. Writing 32-bit entries here made it read every
+     * other slot: argv[0] came out as our argv[1] and the rest as NULL, so the
+     * title had never seen a single argument -- including its own path. */
     uint32_t str_ea = GT5P_ARGV_BASE + 0x100;
     strcpy((char*)(vm_base + str_ea), argv0);
-    vm_write32(GT5P_ARGV_BASE + 0, str_ea);   /* argv[0]        */
-    vm_write32(GT5P_ARGV_BASE + 4, 0);        /* argv[1] = NULL */
+    vm_write64(GT5P_ARGV_BASE + 0, str_ea);   /* argv[0] */
 
-    uint32_t envp_ea = GT5P_ARGV_BASE + 0x200;
-    vm_write32(envp_ea, 0);                   /* envp[0] = NULL */
+    /* GT5P is configured by its command line, and it is not optional.
+     *
+     * func_00013C98(name, buf, len) fetches a setting, and it is a plain argv
+     * scan: strlen(name), then for each argv[i] check argv[i][strlen(name)]
+     * == '=', i.e. tokens of the form name=value. Its first act is
+     *
+     *     if (argc <= 1) return 0;
+     *
+     * so with only argv[0] every setting comes back missing. The filesystem
+     * setup (func_00014B58) asks for `boot_from` first and returns immediately
+     * when it is absent -- which is why no file device is ever constructed, why
+     * PDIPFS is never mounted, and why the application script cannot be found.
+     *
+     * The accepted values sit next to the key in .rodata:
+     *     0x00E98350 "boot_from"   0x00E98360 "bdvd"
+     *                              0x00E98368 "gamedata"
+     *                              0x00E98378 "hddgame"
+     * and the path it builds from there is "/dev_bdvd/PS3_GAME/USRDIR" + "/" +
+     * "PDIPFS", which is exactly what cellFs serves. GT5P_ARGS overrides the
+     * whole list (space-separated) for experimenting with the other two. */
+    const char* extra = getenv("GT5P_ARGS");
+    /* gamedata, not bdvd. All three are accepted, but they select different
+     * volume formats: bdvd looks for USRDIR/GT.VOL (the retail disc layout)
+     * and gamedata looks for PDIPFS, which is what the PSN package ships. */
+    if (!extra || !*extra) extra = "boot_from=gamedata";
 
-    g_main_ctx.gpr[3] = 1;
+    char args[512];
+    strncpy(args, extra, sizeof args - 1);
+    args[sizeof args - 1] = '\0';
+
+    uint32_t argc_out = 1;
+    uint32_t next_str = str_ea + 0x80;
+    for (char* tok = strtok(args, " \t"); tok && argc_out < 30;
+         tok = strtok(nullptr, " \t")) {
+        strcpy((char*)(vm_base + next_str), tok);
+        vm_write64(GT5P_ARGV_BASE + argc_out * 8, next_str);
+        next_str += (uint32_t)strlen(tok) + 1;
+        next_str = (next_str + 15) & ~15u;
+        argc_out++;
+    }
+    vm_write64(GT5P_ARGV_BASE + argc_out * 8, 0);   /* argv[argc] = NULL */
+
+    uint32_t envp_ea = GT5P_ARGV_BASE + 0x600;
+    vm_write64(envp_ea, 0);                   /* envp[0] = NULL, also 64-bit */
+
+    g_main_ctx.gpr[3] = argc_out;
     g_main_ctx.gpr[4] = GT5P_ARGV_BASE;
     g_main_ctx.gpr[5] = envp_ea;
-    printf("[GT5P] argv[0] = \"%s\"\n", argv0);
+    printf("[GT5P] argv[0] = \"%s\" (argc=%u", argv0, argc_out);
+    for (uint32_t i = 1; i < argc_out; i++)
+        printf(", \"%s\"", (const char*)(vm_base + vm_read32(GT5P_ARGV_BASE + i * 4)));
+    printf(")\n");
 }
 
 int main(int argc, char* argv[])
@@ -416,6 +472,11 @@ int main(int argc, char* argv[])
         cellfs_add_path_mapping("/dev_hdd0/game/NPUA80075/",    "input/pkg/");
         cellfs_add_path_mapping("/app_home/",                   "input/pkg/");
         cellfs_add_path_mapping("/dev_hdd0/",                   "gamedata/dev_hdd0/");
+        /* With boot_from=gamedata the title opens its packed volume by a
+         * RELATIVE path -- "PDIPFS/K/4D" -- because on hardware the process's
+         * working directory is its own USRDIR. Nothing here has a cwd, so map
+         * the prefix explicitly. */
+        cellfs_add_path_mapping("PDIPFS/",                      "input/pkg/USRDIR/PDIPFS/");
         printf("[GT5P] cellFs root=\"%s\" (disc + hdd game -> input/pkg/)\n", vfs);
 
         /* Give cellGame the real ids. Without this the HLE answers every
@@ -459,9 +520,13 @@ int main(int argc, char* argv[])
     }
 
     g_main_ctx.gpr[2] = elf.toc;
+    /* argv[0] is not cosmetic here: the filesystem setup strcmps it against
+     * "/dev_bdvd/PS3_GAME/USRDIR/EMAIN.SELF" to decide it is looking at its own
+     * disc layout. With /app_home it takes a different branch and never opens
+     * the volume at all. */
     setup_argv(getenv("PS3_ARGV0") && *getenv("PS3_ARGV0")
                    ? getenv("PS3_ARGV0")
-                   : "/app_home/USRDIR/EBOOT.BIN");
+                   : "/dev_bdvd/PS3_GAME/USRDIR/EMAIN.SELF");
 
 #ifdef _WIN32
     if (getenv("GT5P_HOSTMAP")) dump_hostmap();
