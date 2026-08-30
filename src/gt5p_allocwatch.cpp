@@ -177,6 +177,18 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
      * func_00013C98, compares them with strcmp, and four branches decide which
      * file devices get created. strcmp is called constantly elsewhere, so only
      * look while this function is on the stack. */
+    /* PDIEXT::FileDelayLoad -- vtable+0x10 waits for the load to reach state 3,
+     * vtable+0x24 is its completion side. Main parks in the wait and the PDI
+     * workers do signal its condvar, so it wakes, re-checks and sleeps again:
+     * the load is not finishing. Print the state each time through. */
+    if (strstr(who, "0091BBA8") || strstr(who, "0091BAD8")) {
+        static int n = 0;
+        if (n++ < 20)
+            fprintf(stderr, "[dload] %s obj=0x%08X state=%u err=0x%08X\n",
+                    strstr(who, "0091BBA8") ? "wait" : "complete",
+                    a3_, vm_read32(a3_ + 0x8C), vm_read32(a3_ + 0xD4));
+    }
+
     if (strstr(who, "00014B58")) g_in_fsinit = 1;
 
     if (strstr(who, "00013060")) {

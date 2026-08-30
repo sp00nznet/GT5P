@@ -28,7 +28,74 @@ RSX pipeline built by the studio that cared most about it, and Polyphony's own
 packed filesystem holding 1.8 GB of assets. Tokyo Jungle, the previous most
 complex target, is 7,924 functions.
 
-## Status: Phase 12 — Found the One Thing That Matters
+## Status: Phase 13 — PDIPFS Mounts, and the Game Reads Its Own Data
+
+> A bare run now does this:
+>
+> ```
+> Open /dev_bdvd/PS3_GAME/PARAM.SFO   -> 1040 bytes
+> Open PDIPFS/K/4D                    -> 160 bytes      (volume index)
+> Open PDIPFS/5C/B2                   -> 54,842 bytes   (first real asset)
+> ```
+>
+> **The packed filesystem is mounted.** Everything this document described as a
+> wall — the missing application script, the attract object nothing would drive,
+> the arena that measured an empty container — was downstream of a filesystem
+> that did not exist, and it exists now. See
+> [Three Bugs and a Command Line](#three-bugs-and-a-command-line).
+>
+> Main now blocks in `PDIEXT::FileDelayLoad::wait()` on a load stuck at state 1,
+> and `cond_signal` — called **zero** times for the whole of this project's life
+> until today — now fires twelve times a boot. Still no attract mode.
+
+### Three Bugs and a Command Line
+
+GT5P is configured entirely by its command line, and this port had never given
+it a usable one.
+
+**`argv` is an array of 64-bit pointers, not 32-bit.** The guest CRT's first act
+(`func_00010368`) is
+
+```
+r10 = argv + 4;  r28 = argv;
+do { r0 = [r10]; [r28] = r0; r10 += 8; r28 += 4; } while (++i < argc);
+```
+
+— read at stride 8, write at stride 4: compact an array of 64-bit pointers into
+32-bit ones by keeping each low half. It does the same to `envp` straight after.
+Writing 32-bit entries made it read every *other* slot, so `argv[0]` came out as
+our `argv[1]` and the rest as NULL. **The title had never seen a single
+argument, including its own path.**
+
+**It needs `boot_from=<mode>`.** `func_00013C98(name, buf, len)` is a plain
+`argv` scan for `name=value`, and it opens with `if (argc <= 1) return 0`. The
+filesystem setup asks for `boot_from` first and returns immediately when it is
+missing — which is why no file device was ever constructed. The accepted values
+sit beside the key in `.rodata`:
+
+```
+0x00E98350 "boot_from"    0x00E98360 "bdvd"
+                          0x00E98368 "gamedata"
+                          0x00E98378 "hddgame"
+```
+
+They select different volume formats. `bdvd` looks for `USRDIR/GT.VOL`, the
+retail disc layout — pick it and the game dutifully tries to open a file this
+package does not contain. `gamedata` looks for PDIPFS, which is what the PSN
+package ships.
+
+**`argv[0]` must be the real path.** The setup `strcmp`s it against
+`"/dev_bdvd/PS3_GAME/USRDIR/EMAIN.SELF"`. With `/app_home` it takes a different
+branch and never opens the volume.
+
+Plus a `cellFs` mapping for the relative `PDIPFS/` prefix: with
+`boot_from=gamedata` the title opens `PDIPFS/K/4D` *relative*, because on
+hardware its working directory is its own `USRDIR`.
+
+`FileDeviceCellFS` and `FileDeviceGameData` are now constructed three times
+each. Before this, nothing in that hierarchy was ever constructed at all.
+
+## Phase 12 — Found the One Thing That Matters
 
 > **GT5P's application flow is a script.** The boot's last act is to look up
 > `"scripts/gt5p/Application"` — and that script lives in PDIPFS, Polyphony's
@@ -60,10 +127,10 @@ complex target, is 7,924 functions.
 | RSX configuration | **Done** — GCM init, main-memory map, tiles, zcull, display buffers |
 | Audio (`cellAudio` → WASAPI) | **Partial** — SGX service loop runs to completion, no output device |
 | Input (`cellPad` → XInput) | **Partial** — `cellPadInit` reached |
-| Filesystem | **Partial** — `PARAM.SFO` opens and reads; PDIPFS never mounted |
+| Filesystem | **Working** — PDIPFS mounted; volume index and assets read |
 | Graphics (RSX → D3D12) | **Partial** — configured; `put` idle at `0x10040` because no frame loop runs |
 | Present / vblank ticker | **Done** — `src/gt5p_present.cpp`, 60 Hz |
-| PDIPFS asset loading | **Blocking everything** — the app's own script lives here |
+| PDIPFS asset loading | **Started** — index + first 54 KB asset; loads stall at `FileDelayLoad` state 1 |
 
 ### The Audio Loop That Could Not Count
 
