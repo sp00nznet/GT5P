@@ -55,6 +55,7 @@ void ps3_install_guest_ptr_trap(void);
 unsigned int ps3_hle_count(void);
 void cellfs_set_root_path(const char* root);
 void cellfs_add_path_mapping(const char* ps3_prefix, const char* host_path);
+void cellGame_init_from_paramsfo(const char* sfo_path);
 void vm_write32(uint64_t addr, uint32_t val);   /* big-endian guest store */
 uint32_t vm_read32(uint64_t addr);
 extern uint32_t ppu_hle_inject_base;      /* HLE-visible GCM window base */
@@ -416,6 +417,17 @@ int main(int argc, char* argv[])
         cellfs_add_path_mapping("/app_home/",                   "input/pkg/");
         cellfs_add_path_mapping("/dev_hdd0/",                   "gamedata/dev_hdd0/");
         printf("[GT5P] cellFs root=\"%s\" (disc + hdd game -> input/pkg/)\n", vfs);
+
+        /* Give cellGame the real ids. Without this the HLE answers every
+         * cellGame/cellDiscGame query with its built-in fallback, and this
+         * title's boot was being told its id is "BLES00000" when PARAM.SFO
+         * says NPUA80075 -- which matters the moment anything builds a path
+         * from it (/dev_hdd0/game/<id>/...). */
+        {
+            char sfo[512];
+            snprintf(sfo, sizeof sfo, "%s/input/pkg/PARAM.SFO", vfs);
+            cellGame_init_from_paramsfo(sfo);
+        }
     }
 
     lv2_register_all_syscalls(&g_lv2_syscalls);

@@ -176,6 +176,17 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
         fflush(stderr);
     }
 
+    /* GT5P_ALLOCWATCH=3: trace every wrapped call, from the PRE hook.
+     *
+     * Level 2 logs from gt5p_alloc_note, which returns early unless the call
+     * both returned non-zero and had a non-zero r4 -- so a void function whose
+     * leftover r4 happens to be 0 logs nothing, and reads as "never called".
+     * That cost a wrong conclusion about func_00016130 being skipped when the
+     * call site is plainly unconditional. The pre-hook has no such filter and
+     * fires before the callee, so it also survives a call that never returns. */
+    if (watch_level() >= 3)
+        fprintf(stderr, "[call] %s(r3=0x%08X r4=0x%08X)\n", who, a3_, a4);
+
     static int pad = -1;
     if (pad < 0) { const char* e = getenv("GT5P_HEAPPAD"); pad = e ? atoi(e) : 0; }
     if (pad > 0 && strstr(who, "0094FF30") && a4 && a4 < 0x01000000u)
