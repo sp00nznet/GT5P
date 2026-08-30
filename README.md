@@ -234,6 +234,67 @@ port has had main anywhere near asset loading.
 
 Still no file but `PARAM.SFO` opens, so that is the next wall.
 
+### The Next Wall: Everyone Is Waiting, Nobody Is Working
+
+Past the heap, the boot is a textbook idle deadlock. Main's chain is
+
+```
+func_00687CD8 -> func_00687F90 -> vtable[+0x04] = func_0068DA68   (start)
+                                     [obj+0x44] = 1               (busy)
+                                     enqueue into a priority list
+                              -> vtable[+0x24] = func_0068DB00    (wait)
+                                     sys_cond_wait(cond 93)
+```
+
+and it never comes back. The object is a static at `0x0107B754`; `[obj+0x44]`
+is set to 1 by the start method and **never cleared by anything, all boot**.
+
+The wake path exists and is easy to name. The engine has three sibling helpers,
+each an 11-instruction prologue falling through into a 30-instruction body:
+
+| entry | body | syscall |
+|---|---|---|
+| `func_00938548` | `func_00938574` | 109 `sys_cond_signal_all` |
+| `func_009385F0` | `func_0093861C` | 108 `sys_cond_signal` |
+| `func_00938698` | `func_009386C4` | 107 `sys_cond_wait` |
+
+40 call sites across the binary use them. Main's waiter is `func_0068DB00`; its
+counterpart is `func_0068E3E0`, reached from `func_006736A0`, which is
+`main-vtable+0x10` — the task's "finish" method. **`sys_cond_signal` and
+`sys_cond_signal_all` are called zero times in the entire boot.** Every waiter
+waits; nothing ever finishes.
+
+The reason is one queue. The PDI worker loop is `func_00935690`:
+
+```
+while (running) {
+    rc = sys_event_queue_receive(q, &evt, 1000000);   /* 1 s */
+    if (rc != 0) return;                              /* give up */
+    lock(); for (n = list_head; n; n = n->next) n->vtable[+8]();  unlock();
+}
+```
+
+It only drains its work list *after* an event arrives. Queue 5 is the PDI
+queue — created, never cancelled, and in a 30-second boot:
+
+| queue | receive attempts | events delivered |
+|---|---|---|
+| 1 | 56,784 | 25 |
+| 2 | 56,669 | 18 |
+| 3 | 39,387 | 21 |
+| **5** | **1,901** | **0** |
+
+Nothing is ever posted to it. The enqueue path main takes
+(`func_0068DF78`) is lock, priority-insert, unlock — `func_00938BE8` is plain
+`sys_lwmutex_unlock`, not a wake — so the work lands on a list whose worker is
+blocked waiting for a notification that has no sender.
+
+Two open threads from here: which of the guest's nine `sys_event_port_send`
+sites is supposed to feed queue 5 (none of them are in the PDI module, so it is
+probably fed from an SPU or a bound queue), and separately why a 1-second
+timeout comes back in ~16 ms — 1,901 receives in 30 seconds is about sixty times
+too many, which is a runtime bug independent of the missing events.
+
 ### Older Findings
 
 ### What the Binary Looks Like

@@ -131,9 +131,25 @@ void canary_check(unsigned seq, const char* who)
  * chain is confirmed end to end and the remaining work is the count mismatch
  * alone. If it does not, something else is also wrong and this rules it in.
  */
-extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t /*a3*/,
+extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
                                    uint32_t a4, uint32_t /*a5*/)
 {
+    /* func_00687F90 is "task->start(); task->wait();" through vtable slots
+     * +0x24 and +0x6C. Main reaches the wait and never leaves it -- nothing is
+     * ever posted to the PDI worker queue and no condvar is signalled all boot
+     * -- so name both methods; the start one is where the enqueue should be. */
+    if (strstr(who, "00687F90")) {
+        static int n = 0;
+        if (n++ < 4) {
+            uint32_t vt = vm_read32(a3_);
+            fprintf(stderr, "[task] func_00687F90(obj=0x%08X) vtable=0x%08X "
+                            "start=func_%08X wait=func_%08X\n",
+                    a3_, vt, vm_read32(vm_read32(vt + 0x24)),
+                    vm_read32(vm_read32(vt + 0x6C)));
+            fflush(stderr);
+        }
+    }
+
     static int pad = -1;
     if (pad < 0) { const char* e = getenv("GT5P_HEAPPAD"); pad = e ? atoi(e) : 0; }
     if (pad > 0 && strstr(who, "0094FF30") && a4 && a4 < 0x01000000u)
