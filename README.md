@@ -28,16 +28,20 @@ RSX pipeline built by the studio that cared most about it, and Polyphony's own
 packed filesystem holding 1.8 GB of assets. Tokyo Jungle, the previous most
 complex target, is 7,924 functions.
 
-## Status: Phase 11 — The RSX Is Configured
+## Status: Phase 12 — Found the One Thing That Matters
 
-> The main thread now reaches graphics setup. `cellGcmInit(cmdSize=0x10000,
-> ioSize=0x100000, ioAddr=0x40000000)`, `cellGcmMapMainMemory(0x20000000, 174
-> MB)`, six tile regions, zcull, two 1280×720 display buffers, and a first
-> `cellGcmSetPrepareFlip(0)`. It got there because the SPURS completion event
-> was throwing away the one field the game reads from it — see
-> [The Audio Loop That Could Not Count](#the-audio-loop-that-could-not-count).
-> `put` still sits at `0x10040`, no asset is loaded yet, and the boot ends in an
-> `operator new` retry loop, so there are still no pixels.
+> **GT5P's application flow is a script.** The boot's last act is to look up
+> `"scripts/gt5p/Application"` — and that script lives in PDIPFS, Polyphony's
+> packed filesystem, which this port has never mounted. Every other symptom in
+> this document sits downstream of that one fact: no script, so the attract
+> object is never driven; never driven, so `MenuGameObject::wait()` never
+> returns; never returns, so the frame loop never starts and `put` stays at
+> `0x10040`. The whole investigation now reduces to a single question — see
+> [Root Cause](#root-cause-the-game-is-a-script-and-the-script-is-not-there).
+>
+> The boot is at least stable now: the intermittent crashes that dogged this
+> session turned out to be the runtime writing a string over a function-pointer
+> table, and six consecutive boots since the fix have not crashed once.
 
 | Milestone | Status |
 |-----------|--------|
@@ -56,10 +60,10 @@ complex target, is 7,924 functions.
 | RSX configuration | **Done** — GCM init, main-memory map, tiles, zcull, display buffers |
 | Audio (`cellAudio` → WASAPI) | **Partial** — SGX service loop runs to completion, no output device |
 | Input (`cellPad` → XInput) | **Partial** — `cellPadInit` reached |
-| Filesystem | **Partial** — `PARAM.SFO` opens and reads; no asset loads yet |
-| Graphics (RSX → D3D12) | **Partial** — configured, but `put` never advances past `0x10040` |
+| Filesystem | **Partial** — `PARAM.SFO` opens and reads; PDIPFS never mounted |
+| Graphics (RSX → D3D12) | **Partial** — configured; `put` idle at `0x10040` because no frame loop runs |
 | Present / vblank ticker | **Done** — `src/gt5p_present.cpp`, 60 Hz |
-| PDIPFS asset loading | Not started |
+| PDIPFS asset loading | **Blocking everything** — the app's own script lives here |
 
 ### The Audio Loop That Could Not Count
 
