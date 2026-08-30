@@ -176,6 +176,25 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
         fflush(stderr);
     }
 
+    /* func_008AF6C8(sink=0x010E3760, str) is the engine's log sink -- the
+     * attract pump calls it eight times on the way out. Print what it is being
+     * handed: the game's own account of why it gave up is worth more than any
+     * amount of further disassembly. */
+    if (strstr(who, "008AF6C8") && a4) {
+        static int n = 0;
+        if (n++ < 24) {
+            char buf[160]; unsigned i = 0;
+            for (; i < sizeof buf - 1; i++) {
+                uint32_t w = vm_read32((a4 + i) & ~3u);
+                char c = (char)((w >> (8 * (3 - ((a4 + i) & 3)))) & 0xFF);
+                if (!c) break;
+                buf[i] = (c >= 32 && c < 127) ? c : '.';
+            }
+            buf[i] = 0;
+            if (i) fprintf(stderr, "[log] 0x%08X \"%s\"\n", a4, buf);
+        }
+    }
+
     /* GT5P_ALLOCWATCH=3: trace every wrapped call, from the PRE hook.
      *
      * Level 2 logs from gt5p_alloc_note, which returns early unless the call
