@@ -44,9 +44,15 @@ complex target, is 7,924 functions.
 > that did not exist, and it exists now. See
 > [Three Bugs and a Command Line](#three-bugs-and-a-command-line).
 >
-> Main now blocks in `PDIEXT::FileDelayLoad::wait()` on a load stuck at state 1,
-> and `cond_signal` — called **zero** times for the whole of this project's life
-> until today — now fires twelve times a boot. Still no attract mode.
+> The async loader runs too. `PDIEXT::FileDelayLoad` cycles
+> construct -> wait -> **complete** five times over before the sixth hangs, and
+> `sys_cond_signal` — called **zero** times for the whole of this project's life
+> until today — now fires 36 times a boot. Still no attract mode.
+>
+> `GT5P_HEAPPAD` is no longer needed and now hurts: with assets loading, zero
+> allocations fail, and padding every block only shifts the layout into a worse
+> one (4 files without it, 3 with). The heap still walks into `0x42Cxxxxx` —
+> that corruption is real and unfixed — but it no longer wedges anything.
 
 ### Three Bugs and a Command Line
 
@@ -1033,7 +1039,7 @@ python /path/to/ps3recomp/tools/find_functions.py input/EMAIN.ELF --json     --s
 
 # 4. Drop the .rodata that find_functions mistook for code, then lift
 python -c "import json; f=json.load(open('analysis/functions.json'));   json.dump([x for x in f if int(x['start'],16) < 0xBE0AF4],             open('analysis/functions_code.json','w'))"
-python /path/to/ps3recomp/tools/ppu_lifter.py input/EMAIN.ELF     --functions analysis/functions_code.json --output generated     --code-end 0xBE0AF4 --header-name ppu_recomp.h --source-name ppu_recomp.c
+python /path/to/ps3recomp/tools/ppu_lifter.py input/EMAIN.ELF     --functions analysis/functions_code.json --output generated     --code-end 0xBE0AF4 --header-name ppu_recomp.h --source-name ppu_recomp.c     --hle-stubs analysis/hle_stubs.json
 ```
 
 `0xBE0AF4` is the end of the last executable *section*. The R-X `PT_LOAD`

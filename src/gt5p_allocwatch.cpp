@@ -200,7 +200,19 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
             fprintf(stderr, "[dload] %s obj=0x%08X state=%u err=0x%08X\n",
                     strstr(who, "0091BBA8") ? "wait" : "complete",
                     a3_, vm_read32(a3_ + 0x8C), vm_read32(a3_ + 0xD4));
-            ppu_guest_callstack("dload");
+            /* The ctor copies the request path into the object at +0x90
+             * (stdu r0, 0x90(r27) then three more doublewords). Five loads
+             * complete and the sixth hangs, so the useful question is which
+             * file the sixth one is. */
+            char pth[80]; unsigned k = 0;
+            for (; k < sizeof pth - 1; k++) {
+                uint32_t w = vm_read32((a3_ + 0x90 + k) & ~3u);
+                char c = (char)((w >> (8 * (3 - ((a3_ + 0x90 + k) & 3)))) & 0xFF);
+                if (!c) break;
+                pth[k] = (c >= 32 && c < 127) ? c : '.';
+            }
+            pth[k] = 0;
+            fprintf(stderr, "[dload]   path='%s'\n", pth);
             fflush(stderr);
     }
 
