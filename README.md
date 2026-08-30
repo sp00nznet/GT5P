@@ -359,6 +359,35 @@ actually made ready. The experiment is only worth its one conclusion — the
 attract wait is the gate, and everything downstream is reachable once something
 legitimately completes that object.
 
+### The Intermittent Crash Was Us, Writing on a Function-Pointer Table
+
+Half the runs in this session died somewhere different -- a null-object write,
+an `unresolved indirect call -> 0x43F73A02`, a read through a garbage `CTR`.
+They were all the same bug, and it was in the runtime, not the game.
+
+`cellDiscGameGetBootDiscInfo` was declared with three parameters. It takes one.
+The HLE adapter therefore handed it whatever `r4` held, and it wrote a title-id
+string there. At GT5P's call site `r4` still holds a global loaded two
+instructions earlier for the `RegisterDiscChangeCallback` call -- `0x01025510`,
+which is the middle of an OPD table:
+
+```
+OPD 0x01025510 -> func_0093C3D0   <- "BLES" / "0000" written over code+toc
+OPD 0x01025518 -> func_0093C480   <- code pointer became 0x3000C480
+OPD 0x01025520 -> func_0093C778
+```
+
+`"BLES00000 "` is ten bytes: it destroyed one entry outright and truncated the
+next. Any indirect call through either landed in nowhere.
+
+Fixed in [ps3recomp#109](https://github.com/sp00nznet/ps3recomp/pull/109), and
+the port now also feeds `cellGame` the real ids from PARAM.SFO, which it had
+never done -- the boot had been calling itself `BLES00000` when PARAM.SFO says
+`NPUA80075`.
+
+**Six consecutive 20-second boots, zero crashes, zero unresolved indirect
+calls.** Before this, roughly half of them died.
+
 ### Root Cause: the Game Is a Script, and the Script Is Not There
 
 App init is three calls:
