@@ -26,12 +26,17 @@ WRAPPER = '''
 /* ---- instrument_alloc.py: {name} ------------------------------------- */
 extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
                                 uint32_t a5, uint32_t ret);
+extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3, uint32_t a4,
+                                   uint32_t a5);
 
 void {name}(ppu_context* ctx)
 {{
     uint32_t a3 = (uint32_t)ctx->gpr[3];
     uint32_t a4 = (uint32_t)ctx->gpr[4];
     uint32_t a5 = (uint32_t)ctx->gpr[5];
+    /* Pre-hook may rewrite the size argument (GT5P_HEAPPAD); a3/a5 above are
+       still the values the caller passed, which is what the log wants. */
+    ctx->gpr[4] = gt5p_alloc_pre("{name}", a3, a4, a5);
     gt5p_orig_{name}(ctx);
     /* Drain here so r3 is the final return value and not a mid-chain state;
        the caller's own DRAIN_TRAMPOLINE then finds nothing left to do. */

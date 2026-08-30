@@ -188,15 +188,51 @@ blelr  cr7              # limit <= end -> bail out, skip the back-link
 
 so it bails and leaves the list half-linked rather than rejecting the block.
 
-Two facts bound the search. The game makes exactly one `sys_memory_allocate` in
-the whole boot — `size=0x100000, flags=0x400` — and gets `0x40000000`, which is
-the `ioAddr` `cellGcmInit` is then called with, so that part is consistent.
-And `0x42C80000` propagates node to node: each split writes the previous node's
-end into the new one, so the `[ww]` watch catches the copy, not the origin.
+That value propagates node to node, so an address watch only ever catches the
+copy. Watching the *value* instead ([ps3recomp#108](https://github.com/sp00nznet/ps3recomp/pull/108))
+found the origin in one run.
 
-Next step is to find where `100.0f` first lands in `[0x20000000, 0x20100000)`
-rather than watching one node, since the value is distinctive enough to scan
-for.
+### An Arena With No End
+
+`func_006A4400` is a bump arena:
+
+```
+r9 = arena->base;
+if (r9 && out) { *out = r9 + arena->cursor; memset(*out, 0, size); }
+arena->cursor += size;          /* no limit, no check, ever */
+```
+
+It is run twice. Pass one with `arena->base == 0` only accumulates sizes; the
+caller then takes one CRT block that big, points the arena at it, and reruns the
+identical code to fill. The two passes have to agree, and here they do not:
+
+```
+pass 1   out=0xFFFFF4FC  size=0x0      cursor 0x58    <- block sized 0x58
+pass 2   out=0xFFFFF4FC  size=0x26C    cursor 0x2C4   <- and on to 0x480+
+```
+
+`0x26C` is `31 × 20`: a count that is 0 while measuring and 31 while filling.
+So the arena gets a `0x58` block and writes more than a kilobyte into it,
+marching 20-byte records — glyph metrics, floats defaulting to `100.0f` —
+straight across the CRT's free-list nodes. That is where the heap's `next`
+pointer becomes `100.0f`, and that is what eventually parks the main thread in
+`operator new` forever.
+
+The chain is confirmed end to end. `GT5P_HEAPPAD=<bytes>` adds slack to every
+CRT block; with more slack than the overrun, the boot walks straight past the
+retry loop:
+
+| | `GT5P_HEAPPAD=0` | `GT5P_HEAPPAD=4096` |
+|---|---|---|
+| main ends at | `operator new` retry, `size=0x108` | `func_00938698`, the PDI path |
+| heap reaches | `0x20017xxx` | `0x2043F510` |
+
+That is a diagnosis, not a fix — it is a debug pad, and the real repair is
+whatever makes the two passes disagree. But it moves the main thread into the
+same function the six PDIPFS worker threads sit in, which is the first time this
+port has had main anywhere near asset loading.
+
+Still no file but `PARAM.SFO` opens, so that is the next wall.
 
 ### Older Findings
 
