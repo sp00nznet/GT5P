@@ -289,11 +289,30 @@ Nothing is ever posted to it. The enqueue path main takes
 `sys_lwmutex_unlock`, not a wake — so the work lands on a list whose worker is
 blocked waiting for a notification that has no sender.
 
-Two open threads from here: which of the guest's nine `sys_event_port_send`
-sites is supposed to feed queue 5 (none of them are in the PDI module, so it is
-probably fed from an SPU or a bound queue), and separately why a 1-second
-timeout comes back in ~16 ms — 1,901 receives in 30 seconds is about sixty times
-too many, which is a runtime bug independent of the missing events.
+The task itself is queued correctly. Both scheduler lists hold it:
+
+```
+0x011BB8E8: vtable=00F6F258  head=0107B76C  tail=0107B76C  state=2
+0x011BB928: vtable=00F6F278  head=0107B780  tail=0107B780  state=2
+```
+
+So nothing is lost or mislinked — the work is sitting on the right list, and no
+thread ever comes to take it.
+
+**This probably subsumes the heap bug.** The arena's measuring pass counts
+entries in a container that is empty, and its filling pass finds 31 — the same
+shape you get when a table is populated between the two passes. Nothing in this
+port has loaded any data yet, so "empty while measuring" is exactly what an
+un-started asset system produces. If that is right, the arena overrun is a
+*symptom* of this deadlock rather than a separate defect, and `GT5P_HEAPPAD`
+stops being needed once work actually flows. Worth confirming before spending
+effort on a direct fix for the count mismatch.
+
+Two open threads: which of the guest's nine `sys_event_port_send` sites is
+supposed to feed queue 5 (none are in the PDI module, so likely an SPU or a
+bound queue), and separately why a 1-second timeout comes back in ~16 ms —
+1,901 receives in 30 seconds is about sixty times too many, which is a runtime
+bug independent of the missing events.
 
 ### Older Findings
 
