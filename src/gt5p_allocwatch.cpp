@@ -150,6 +150,32 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
         }
     }
 
+    /* GameObjectBase::vtable+0x1C -- activate. It sets the busy byte that
+     * MenuGameObject::wait() then blocks on for the rest of the boot, so the
+     * question is what context calls it: if activate and wait are the same
+     * caller, the object is meant to be ticked by a manager somebody else
+     * drives; if they are different, main is waiting on work it started
+     * earlier and the tick is its own frame loop. */
+    if (strstr(who, "0068DA68")) {
+        static int n = 0;
+        if (n++ < 3) {
+            fprintf(stderr, "[activate] GameObjectBase+0x1C obj=0x%08X busy=%u\n",
+                    a3_, vm_read32(a3_ + 0x44) >> 24);
+            ppu_guest_callstack("activate");
+            fflush(stderr);
+        }
+    }
+
+    /* func_00013060 is the attract pump: app init calls it between "activate
+     * the AdvertiseSimplePS3 object" and "wait for it to finish", so it is what
+     * has to drive the object to completion. It returns, and the object is
+     * still busy -- so the question is whether it loops at all. */
+    if (strstr(who, "00013060")) {
+        fprintf(stderr, "[pump] ENTER func_00013060(r3=0x%08X) t=%llu ms\n",
+                a3_, (unsigned long long)GetTickCount64());
+        fflush(stderr);
+    }
+
     static int pad = -1;
     if (pad < 0) { const char* e = getenv("GT5P_HEAPPAD"); pad = e ? atoi(e) : 0; }
     if (pad > 0 && strstr(who, "0094FF30") && a4 && a4 < 0x01000000u)
@@ -160,6 +186,25 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
 extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
                                 uint32_t a5, uint32_t ret)
 {
+    /* The pump's first act is: if (func_0096DE30()) return; -- so this
+     * one byte decides whether attract mode runs at all. */
+    if (strstr(who, "0096DE30"))
+        fprintf(stderr, "[pump] gate func_0096DE30 -> %u (non-zero SKIPS attract)\n",
+                ret & 0xFF);
+
+    if (strstr(who, "007D1B60")) {
+        static int n = 0;
+        if (n++ < 6)
+            fprintf(stderr, "[pump] step func_007D1B60(0x%08X) -> 0x%08X  [ret+0]=0x%08X\n",
+                    a3, ret, ret ? vm_read32(ret) : 0);
+    }
+
+    if (strstr(who, "00013060")) {
+        fprintf(stderr, "[pump] LEAVE func_00013060 -> 0x%08X t=%llu ms\n",
+                ret, (unsigned long long)GetTickCount64());
+        fflush(stderr);
+    }
+
     int lvl = watch_level();
     canary_check(g_seq + 1, who);
     if (!lvl) return;

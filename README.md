@@ -359,6 +359,56 @@ actually made ready. The experiment is only worth its one conclusion — the
 attract wait is the gate, and everything downstream is reachable once something
 legitimately completes that object.
 
+### Root Cause: the Game Is a Script, and the Script Is Not There
+
+App init is three calls:
+
+```
+bl func_00011A28    ; activate the AdvertiseSimplePS3 object (busy = 1)
+bl func_00013060    ; the pump -- this is what must drive it to completion
+bl func_00011AC8    ; wait for it to finish   <- main dies here
+```
+
+`func_00013060` takes one argument, and it is a string:
+
+```
+0x00E97618: "scripts/gt5p/Application"
+```
+
+**GT5P's application flow is a script**, loaded by name out of Polyphony's packed
+filesystem. Instrumented, the pump's entire life is one millisecond:
+
+```
+[pump] ENTER func_00013060(r3=0x00E97618)
+[pump] gate func_0096DE30 -> 0            (does not take the early-out)
+[pump] step func_007D1B60(0x2027F6D0) -> 0x2027F70C
+       two small allocations
+[pump] LEAVE func_00013060                (same millisecond)
+```
+
+It never reaches the resource lookup. There is nothing to run, because there is
+nothing mounted: the two functions that build the mount path
+`/dev_bdvd/PS3_GAME/USRDIR` + `/` + `PDIPFS` — `func_0002D938` and
+`func_0002E810` — are **never called once** in a boot, and the only file this
+port has ever opened is `PARAM.SFO`.
+
+So the chain runs the whole way down:
+
+| | |
+|---|---|
+| PDIPFS is never mounted | proven — mount functions never called, no file opened |
+| so `scripts/gt5p/Application` cannot be found | the pump returns in 1 ms |
+| so the attract object is never driven | its busy byte stays 1 all boot |
+| so `MenuGameObject::wait()` never returns | main parks on cond 93 |
+| so the frame loop never starts | `put` stays at `0x10040`, no pixels |
+
+And it plausibly explains the heap corruption too: the arena's measuring pass
+counts a container that is empty precisely because no data has loaded.
+
+**The next question is the right one to ask, and it is a single question:** what
+should call the PDIPFS mount, and why has that not run? Everything else in this
+README is downstream of it.
+
 ### Older Findings
 
 ### What the Binary Looks Like
