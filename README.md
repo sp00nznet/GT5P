@@ -308,11 +308,56 @@ un-started asset system produces. If that is right, the arena overrun is a
 stops being needed once work actually flows. Worth confirming before spending
 effort on a direct fix for the count mismatch.
 
-Two open threads: which of the guest's nine `sys_event_port_send` sites is
-supposed to feed queue 5 (none are in the PDI module, so likely an SPU or a
-bound queue), and separately why a 1-second timeout comes back in ~16 ms —
-1,901 receives in 30 seconds is about sixty times too many, which is a runtime
-bug independent of the missing events.
+Queue 5 has no port connected to it at all — the boot wires ports only to
+queues 1, 2 and 6 — and the guest never calls `sys_spu_thread_bind_queue`,
+`sys_spu_thread_group_connect_event` or `sys_event_port_connect_ipc` anywhere.
+SPURS attaches only queue 1. So the sender for queue 5 does not exist yet
+because the code that would create it has not run.
+
+### The Binary Still Has Its RTTI
+
+This title was never stripped. Every polymorphic class carries a live
+`std::type_info` with a mangled name, and every vtable is preceded by
+`{ offset_to_top, typeinfo }`. `scripts/rtti.py` walks that and recovers **1,442
+vtables and 8,314 virtual functions**, which turns the whole investigation from
+address archaeology into reading:
+
+```
+func_0068DB00  MENU::MenuGameObject vtable+0x24
+func_006736A0  MENU::MenuGameObject vtable+0x10
+func_0068DA68  PDIEXT::GameObjectBase vtable+0x1C
+func_00687F90  PDIEXT::AdvertiseSimplePS3 vtable+0x60
+```
+
+So the object the whole boot is waiting on is **`PDIEXT::AdvertiseSimplePS3`** —
+the attract-mode object — registered into
+`PDIEXT::UpdateManagerT<GameObjectPS3>` and
+`PDIEXT::RenderManagerT<GameObjectPS3>`, sitting next to `PDIEXT::MPEGStream`
+and `PDIEXT::PAMFStream`. Attract mode here is a streamed movie, and the boot
+sequence is: activate the object (`GameObjectBase vtable+0x1C` sets busy and
+registers it with both managers), then `MenuGameObject::wait()` blocks until it
+deactivates.
+
+Nothing ticks the managers. The only loop running is tid 1's sysutil pump
+(`usleep(20000)` then `cellSysutilCheckCallback`, 888 calls in 30 s); the game's
+own frame loop is main, and main is inside the wait.
+
+`analysis/rtti.json` is derived from the game binary, so it is gitignored like
+everything else in `analysis/` — run `scripts/rtti.py` against your own dump.
+
+### Confirming the Gate
+
+`FLOW_CONDKICK=1` caps infinite condition waits and returns `CELL_OK`, which is
+a lie but a useful one: the guest's wait loop exits on a zero return. With it,
+main leaves the attract wait and runs on into the SGX audio teardown, where it
+contends for the job chain's lwmutex and — this time — **wins it, twelve times,
+after ~4 ms each**. So that is no longer a deadlock, just contention.
+
+It then dies writing through a null object (`write at host 0x24`,
+`LR=0x0096C890`), which is what a lie of this shape earns: the object was never
+actually made ready. The experiment is only worth its one conclusion — the
+attract wait is the gate, and everything downstream is reachable once something
+legitimately completes that object.
 
 ### Older Findings
 
