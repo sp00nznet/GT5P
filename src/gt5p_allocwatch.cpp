@@ -196,6 +196,19 @@ static int g_fl_before;   /* free-list state entering a bracketed call */
 extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
                                    uint32_t a4, uint32_t a5_)
 {
+    /* Log every arena reservation, tagged by pass. func_006A4400 runs twice
+     * over the same layout: a measuring pass with the arena base still 0 (so
+     * it only accumulates the offset) and a filling pass with a real base. If
+     * the two disagree by 0x468 bytes, the sequences differ somewhere, and the
+     * only way to see where is to print both and line them up. */
+    if (strstr(who, "006A4400")) {
+        unsigned base = vm_read32(a3_);
+        static int n = 0;
+        if (n++ < 400)
+            fprintf(stderr, "[arena] %s base=0x%08X off=0x%08X size=%u\n",
+                    base ? "fill   " : "measure", base, vm_read32(a3_ + 4), a5_);
+    }
+
     /* GT5P_ARENA_OUTZERO=1 -- candidate fix.
      *
      * func_006A4400 skips writing *out when the arena base is still 0, which

@@ -404,6 +404,39 @@ end. Whatever the measuring pass is actually reading, zero is not the value
 hardware gives it — or the disagreement is somewhere else entirely and the
 uninitialised read is a red herring.
 
+#### The 0x468, reproduced exactly
+
+Logging every arena reservation and tagging it by pass — the measuring pass
+runs with the arena base still 0, the filling pass with a real base — produces
+the discrepancy this document has quoted for months, to the byte:
+
+```
+measure: 16 calls, total   164 bytes (0xA4)
+fill   : 48 calls, total  1292 bytes (0x50C)
+difference:              1128 bytes (0x468)
+```
+
+And it is not spread across the layout. It localises to one call:
+
+```
+first size mismatch at call 12: measure size=0, fill size=620
+```
+
+620 bytes is the exact size of the call that breaks the free list. The
+measuring pass asks for **nothing** where the filling pass asks for 620, so the
+arena is reserved too small and the fill walks off the end into the heap.
+
+This also explains why `GT5P_ARENA_OUTZERO=1` made things measurably worse
+rather than better. The measuring pass skips writing `*out` when the base is 0,
+and the caller computes a later size from that slot — so writing a definite
+**zero** into it does not stabilise the measurement, it *guarantees* the
+size-zero reservation that causes the under-count. The fix was pushing in
+precisely the wrong direction, which the numbers said before the mechanism did.
+
+What the measuring pass should see in that slot is now the whole question, and
+it is a narrow one: find which caller produces call 12 and what it derives 620
+from. The callers are `func_006C0218`, `func_006C0620` and `func_006C19E0`.
+
 #### It is not a locking race
 
 A free list that holds a live block, damaged in a different place every run,
