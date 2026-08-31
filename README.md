@@ -463,6 +463,50 @@ the context pointer, drop the print cap, and compare sequences rather than
 totals. Aggregating across contexts produces the same headline number by
 coincidence and will mislead about everything else.
 
+#### Why the write watch cannot see the descriptors arrive
+
+Watching `0x20085BE0` for the copy is futile, and it is worth knowing why before
+anyone spends a run on it. `LBP_WW` is built on `vm_write*`, so it sees writes
+made by lifted guest code — and `cellFs` reads do not go through it:
+
+```
+bytes_read = fread(gptr(buf), 1, nbytes, s_files[fd].host_fp);
+```
+
+The read writes **straight into guest memory through the host `fread`**. Any
+buffer whose contents arrive from a file is invisible to the write watch. Five
+consecutive runs confirm the shape: every one reaches `count=31`, and every one
+records **zero non-zero writes** to that buffer. The data is there; the watch
+structurally cannot see it land.
+
+#### What the enumerator actually sees
+
+Logging every call in order is far more informative than watching the memory:
+
+```
+#1..#13  count=0   ""
+#14      count=8   "mix0, F:-100:100, 0, Channel 0 blend, %..."
+#15      count=0   ""
+#16      count=8   "mix0, ..."                       <- the same descriptor again
+#18      count=16  "type, L:NONE:LPF:HPF:BPF..."
+#19      count=0   ""
+#20      count=16  "type, ..."                       <- again
+#22      count=8   "use, B, 1, Use.igain, ..."
+#24      count=8   "use, ..."                        <- again
+```
+
+Two things stand out. Each descriptor is counted **twice** with an empty count
+between — which is the measure/fill pairing seen from the enumerator's side.
+And **the first thirteen calls are all empty**: early on the scratch buffer
+never holds a descriptor at all, and only later do real ones appear.
+
+That is the ordering problem in its plainest form. The descriptors are static
+data in the ELF, so nothing has to be computed; something simply has not copied
+them into scratch yet when the earliest reservations are measured. Which
+objects those first thirteen belong to, and what sets their descriptor pointer,
+is the next thing to find — and it is a question about object initialisation
+order, not about memory corruption.
+
 #### What is directly measured and stands
 
 Independent of any pass model, each of these is a direct observation:
