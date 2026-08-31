@@ -546,18 +546,32 @@ func_006C5CF8 yields an empty descriptor on early calls
   -> the loader is never asked for anything: no assets, no frame, no attract mode
 ```
 
-Every arrow in that chain was measured. One qualification belongs with it,
-added after the fact: the **top line is an observation, not an explanation**.
-`func_006C5CF8` demonstrably yields an empty descriptor on early calls, and
-everything below follows from that — but *why* it does is unresolved. A later
-attempt traced a plausible cause into `func_006CF080` and `func_006CD504`,
-found the zero returns there fully explained by a drain-if-pending helper, and
-concluded the connection to these empty descriptors was never established. See
-[the end of that trail](#the-descriptor-virtual-and-the-end-of-the-trail).
+Every arrow in that chain was measured. Two qualifications belong with it, and
+the second corrects the first — both are kept because the correction is the
+useful part.
 
-So: the chain from "empty descriptor" down to "no attract mode" is solid. The
-step from "something in the audio init is not ready" up to "empty descriptor" is
-not, and no reading in this document should be treated as having closed it.
+The top line is an **observation, not an explanation**. `func_006C5CF8`
+demonstrably yields an empty descriptor on early calls and everything below
+follows, but *why* it does was pursued and not closed. Tracing upward reaches
+`func_006CF50C` -> `func_006CF080` -> `func_006CD504`, and the zero those
+return is fully explained: a pending flag, two `cellSpurs` imports, and the
+second one's result passed straight back. Both imports resolve. A zero there
+plausibly means *no work pending* rather than *rejected*.
+
+The first version of this note then said the link to the empty descriptors "was
+never established", which overstates it in the other direction. It was
+established by correlation on a shared tick — `func_006CF50C` returning zero
+alongside `count=0`, and returning a handle alongside `count=8` — but on **two
+paired samples**, not at scale. A broader test needs the `[look]` and `[enum]`
+probes re-instrumented, which the clean shipping build deliberately does not
+carry.
+
+So the accurate statement is neither "closed" nor "unfounded": the chain from
+"empty descriptor" down to "no attract mode" is solid, and the step above it
+rests on a two-sample correlation with a mechanism that reads more like
+*nothing to do* than *failure*. Anyone continuing should widen that correlation
+first; it is one rebuild and it decides whether this whole thread is the right
+one.
 
 `func_006C5CF8` turns out to be a **nine-way jump-table dispatch**, one case per
 parameter group:
