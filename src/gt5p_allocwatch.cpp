@@ -732,6 +732,18 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
 extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
                                 uint32_t a5, uint32_t ret)
 {
+    /* func_006CF080 never assigns its own return value: its epilogue restores
+     * registers and returns whatever r3 already held. The only r3-producing
+     * call on the path out is func_006CD504, from the 11,762-hit block. If that
+     * is right, its returns should track func_006CF080's exactly -- so log
+     * both and check rather than assume. */
+    if (strstr(who, "006CD504")) {
+        static int n = 0;
+        if (n++ < 20)
+            fprintf(stderr, "[cd504] func_006CD504(0x%08X) -> 0x%08X%s\n",
+                    a3, ret, ret ? "" : "   ZERO");
+    }
+
     /* func_006CF080 registers an SPU audio effect module and begins with two
      * capacity checks against the SPURS job chain:
      *     [jc+17024] + 1  >= 0x80   -> reject

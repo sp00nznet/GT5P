@@ -839,13 +839,46 @@ flushing whenever the chain fills. That is a completely different object from
 the "module registration with guarded rejections" this section assumed for
 several rounds.
 
-The open question survives, and only now rests on a correct map:
-`func_006CF080` returns a handle on some calls and zero on others with identical
-arguments, it has a single exit, and it is a loop — so the returned value is
-whatever the loop leaves in `r3`. Finding where that is assigned is the next
-step, and it should be done by tracing assignments to `r3` inside the body
-rather than by reading branch targets, which is what went wrong three times
-here.
+Tracing assignments to `r3` finishes the job. There are five in the whole
+function and none is an explicit return value — the epilogue restores registers
+and returns whatever `r3` already held. The value comes from `func_006CD504`,
+confirmed by instrumenting both:
+
+```
+[cd504] func_006CD504(0x20039780) -> 0x20039780
+[cd504] func_006CD504(0x20039780) -> 0x00000000   ZERO
+[cd504] func_006CD504(0x20039780) -> 0x20039780
+[cd504] func_006CD504(0x20039780) -> 0x00000000   ZERO
+```
+
+And `func_006CD504` is 27 instructions:
+
+```
+cmpwi r3, 0                 ; null -> return 0
+r0 = [r3 + 20232]           ; a pending flag
+if (r0 == 0) return r3      ; nothing pending -> return the chain, non-zero
+bl 0x00BDF674               ; cellSpurs import, NID 0x738E40E6
+mr r3, r31
+bl 0x00BDF6D4               ; cellSpurs import, NID 0xA7C066DE
+li r0, 0
+stw r0, 20232(r31)          ; clear the flag
+return                      ; r3 = whatever the second import returned
+```
+
+Both imports resolve — neither appears in the unresolved list — so this is not
+a missing NID.
+
+**And that undermines the framing this subsection was built on.** A zero return
+here most likely means *"the pending flag was set, the two SPURS calls ran, and
+the second reported nothing"* — that is, **no work to do** — rather than *"the
+request was rejected"*. Identical arguments producing a handle sometimes and
+zero other times is exactly what a drain-if-pending helper looks like.
+
+So the correlation drawn earlier between these zero returns and the empty audio
+descriptors may be coincidence. It was never tested as a causal link, only
+observed alongside. That is the honest state, and it is where this stops: the
+zeros are explained, and whether they have anything to do with the empty
+descriptors is an open question that this work did not answer.
 
 That is where the trail stops. The remaining question is what initialises that
 registry and when — an ordinary question about the caller's loop, not
