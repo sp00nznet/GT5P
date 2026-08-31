@@ -154,6 +154,20 @@ static int gt5p_drain_step(const char* who)
          * hands off; these are every call it makes. */
         "00925F60", "00916DD0", "00938DA0", "00951CA8", "00938BE8",
         "0093BF70", "00918C48", "009200F0",
+        /* the decompressor loop and its work call -- entered before
+         * the window opens, so only their returns print, which is
+         * exactly the question: does the worker ever come back out */
+        "00920198", "00919060", "00920220",
+        /* the layer between the loop and the wait */
+        "00957C88", "00956D20", "00956C58", "00A0A458",
+        /* func_0091FBA8 is the producer: it waits on 6896 for the
+         * decoder to be ready, writes the buffer range into
+         * 6932/6936 and signals 6876. It was waiting and got woken,
+         * and then never fed anything. */
+        "0091FBA8", "0091FF30",
+        /* the decode loop's two callbacks: slot 3 is the refill
+         * (func_009200F0), slot 2 the output writer */
+        "00918B88", "0091FD78", "0091FCC8",
     };
     if (!g_in_drain) return 0;
     for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++)

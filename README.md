@@ -28,7 +28,185 @@ RSX pipeline built by the studio that cared most about it, and Polyphony's own
 packed filesystem holding 1.8 GB of assets. Tokyo Jungle, the previous most
 complex target, is 7,924 functions.
 
-## Status: Phase 13 — PDIPFS Mounts, and the Game Reads Its Own Data
+## Status: Phase 14 — The Switch Statements Were Invisible
+
+> `find_functions` walks direct branches. A `bctr` through a jump table is a
+> dead end for it, so every case that *only* a computed branch reaches looks
+> like unreferenced bytes and never gets lifted. There are 246 such tables in
+> this binary and 1,710 targets sitting in that blind spot.
+>
+> ```
+>                       before        after
+> functions lifted      39,660        40,320
+> spins on queue 0      4,398,000     0
+> unresolved indirect   0             0
+> SPU dispatch misses   0             0
+> PDIPFS files opened   4             4
+> ```
+>
+> The 4.4 million busy-spins on event queue 0 — a thread receiving on a queue
+> id nothing ever set, blamed in this document on the Job Manager for weeks —
+> were code the switch tables hid. They are gone. File progress is unchanged,
+> so this buys headroom rather than a new asset. See
+> [Recovering the Switch Statements](#recovering-the-switch-statements).
+>
+> The sixth async load is now traced the whole way down, from the file device
+> to the exact frame that stops it. It ends in a decompressor that is handed a
+> zero-length input buffer by an abort protocol and never comes back out. See
+> [The Sixth Load, All the Way Down](#the-sixth-load-all-the-way-down).
+> Still no attract mode.
+
+### Recovering the Switch Statements
+
+`0x009180AC` had to be seeded by hand before the boot would resolve its
+indirect calls. That should have been the tell: it is not a function, it is
+case 0 of a twelve-way switch in `func_00917EB0`, and eleven siblings were
+sitting in the same blind spot with it.
+
+The shape GCC emits here makes the table self-describing — it goes directly
+after the `bctr`, and each entry is a signed 32-bit offset from the table's own
+base:
+
+```
+cmplwi rX, 11
+ble    .Ldispatch
+...default arm...
+.Ldispatch:
+lwz    r11, table@toc(r2)
+rldic  r9, r0, 2, 30
+lwzx   r0, r9, r11
+extsw  r0, r0
+add    r0, r0, r11
+mtctr  r0
+bctr
+.long  off0, off1, ...        <- table base == this address
+```
+
+`scripts/jumptables.py` reads entries until one stops decoding to a plausible
+target, bounded above by the nearest target already seen — the compiler puts
+the first case's code immediately after the table, so the table cannot run past
+it. That bound is what makes it work without the guarding compare. Keying off
+`cmplwi` alone misses this very function, whose compare sits **240 bytes back**,
+on the far side of the default arm; a look-back window sized for the common
+case finds nothing here.
+
+Of 2,538 targets: 4 were already function starts, 824 land *inside* an
+already-lifted function, and 1,710 sit in unlifted gaps. Only the 1,710 are
+seeded. Seeding the 824 would split a working function in half, which is the
+one way this change could do harm.
+
+A caution earned the hard way, recorded so it is not re-chased: a 1,360-byte
+run of real PPC code at `0x009159F8`, starting mid-body with no prologue, looks
+exactly like a truncated function. It is not — every branch in the preceding
+function was checked and none targets the gap. Unreferenced bytes that decode
+cleanly are usually a jump table's cases or an exception landing pad, not
+evidence of a lifting bug.
+
+### The Sixth Load, All the Way Down
+
+Five async loads complete; the sixth parks at state 2. The chain from there,
+each step measured rather than inferred:
+
+| Layer | What it is |
+|---|---|
+| `func_00917EB0` | device worker step, vtable slot 16 |
+| `func_00917208` | the drain, slot 25 — moves a queued request into `dev+56` |
+| `func_00916E40` | slot 26 |
+| `func_00925F60` | `FileDevicePFSFSHdd` slot 29 — the packed-file read |
+| `func_00916DD0` | calls slot 5 of the object at `handler+12` |
+| `func_0091FEB8` | `PDISTD::FileExpandPSX` slot 5 — abort a decompression in flight |
+
+`func_00917EB0` switches on `[req+0x64]` through the jump table above, and the
+selector decides everything:
+
+| sel | device slot | `r24` | behaviour |
+|---|---|---|---|
+| 0, 1 | 17 | 0 | async — queue on `dev+64`, complete on a later tick |
+| 2, 3 | 18 | 1 | synchronous — completes this tick |
+| 4 | 19 | 1 | synchronous — completes this tick |
+
+That table corrects a reading this document carried for a while. The four
+PFSFSHdd loads that "complete" are `sel=4`: they finish *synchronously* and
+never touch the queue at all. The stalled load is the only genuinely
+asynchronous request on that device, so "four succeed and one fails on the same
+device" was never the paradox it looked like.
+
+The read never gets as far as issuing I/O. Its first act is to stop any
+decompression already running:
+
+```
+func_0091FEB8(obj):
+    if (obj[6917] == 0) return       ; nothing in flight -- normal path
+    obj[6932] = 0                    ; input buffer base
+    obj[6936] = 0                    ; input buffer length
+    signal(obj+6876)                 ; wake the decoder
+    wait  (obj+6816)                 ; block until it unwinds   <-- never returns
+    obj[6917] = 0
+```
+
+`FileExpandPSX` carries six auto-reset events at `obj+6796` stride 20, and they
+pair up cleanly once you have all six:
+
+```
+6796  "start work"       waited by func_00920220, the decompressor thread loop
+6816  "work done"        signalled by func_00920220, waited by the abort above
+6876  "here is input"    waited by func_009200F0 (refill), signalled by the abort
+6896  "buffer consumed"  signalled by func_009200F0, waited by func_0091FBA8
+```
+
+The synchronisation primitive itself is sound — a correct auto-reset event,
+where a signal with no waiter parks a sticky flag at `+17` that the next wait
+consumes, so wakeups are not lost. It was worth checking; it is not the bug.
+
+Instrumenting both sides shows the handshake working right up to the end:
+
+```
+> func_0091FBA8(obj, handler)              producer starts
+  > func_009200F0(obj, ...)                decoder asks for input
+  signal obj+6896  waiter=1                "ready" -- producer was waiting
+  wait   obj+6876  waiter=0                decoder waits for the buffer
+< func_0091FBA8 ret=0x000FD303             producer returns
+signal obj+6876  waiter=1                  the abort wakes the decoder
+wait   obj+6816  waiter=0                  reader blocks -- forever
+< func_009200F0 ret=1                      decoder wakes with base=0, len=0
+```
+
+Entry and return counts name the exact frame that does not come back:
+
+```
+func_009200F0  (refill)   1 call,  1 return
+func_00956D20  (decode)   2 calls, 1 return     <--
+func_00957C88  (stage)    1 call,  0 returns
+```
+
+The second `func_00956D20` gets its zero-length buffer and then neither returns,
+nor calls the refill again, nor calls the output callback again. It is spinning
+in pure computation — 2,280 bytes of dense bit manipulation with no blocking
+primitive in it. `func_00920220` can only signal `6816` after that call returns,
+so the reader waits on an event nobody will ever reach.
+
+What has been ruled out, so the next attempt starts from here:
+
+- **Not a lifting gap.** No `TODO`/unimplemented marker anywhere in the lifted
+  `func_00956D20`; every instruction has a handler.
+- **Not a missing jump table.** All nine `bctr`-class words in the decoder are
+  `bctrl` — virtual calls through OPDs at vtable slots 2 and 3, not computed
+  branches.
+- **Not a disassembler bug.** `disasm_audit_operands.py` over the whole ELF:
+  `addi`, `lwz`, `stw`, `ori`, `rlwinm` all pass with zero divergences; the four
+  residual ones are float/vector *formatting* only.
+- **Not a dead worker.** Every device's worker loop runs, and the decompressor
+  thread is alive and reaches its refill.
+
+The live suspicion is the guest null page. The abort deliberately hands the
+decoder an empty buffer at address 0 and expects it to unwind. Here a read at 0
+faults in a zero-filled page and succeeds, so the decoder is fed an endless
+stream of zero bits — and an LZ/Huffman decoder given zero-length codes loops
+rather than terminating. On hardware that read does not quietly return zeros.
+That is a hypothesis, not a finding: it has not been tested yet.
+
+
+## Phase 13 — PDIPFS Mounts, and the Game Reads Its Own Data
 
 > A bare run now does this:
 >
