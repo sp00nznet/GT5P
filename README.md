@@ -546,6 +546,19 @@ func_006C5CF8 yields an empty descriptor on early calls
   -> the loader is never asked for anything: no assets, no frame, no attract mode
 ```
 
+Every arrow in that chain was measured. One qualification belongs with it,
+added after the fact: the **top line is an observation, not an explanation**.
+`func_006C5CF8` demonstrably yields an empty descriptor on early calls, and
+everything below follows from that — but *why* it does is unresolved. A later
+attempt traced a plausible cause into `func_006CF080` and `func_006CD504`,
+found the zero returns there fully explained by a drain-if-pending helper, and
+concluded the connection to these empty descriptors was never established. See
+[the end of that trail](#the-descriptor-virtual-and-the-end-of-the-trail).
+
+So: the chain from "empty descriptor" down to "no attract mode" is solid. The
+step from "something in the audio init is not ready" up to "empty descriptor" is
+not, and no reading in this document should be treated as having closed it.
+
 `func_006C5CF8` turns out to be a **nine-way jump-table dispatch**, one case per
 parameter group:
 
