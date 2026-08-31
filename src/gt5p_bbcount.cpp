@@ -221,10 +221,17 @@ extern "C" int gt5p_freelist_bad(unsigned heap)
  * resolved target and the object so the two groups can be told apart. */
 /* `obj` carries the dispatch index r5: func_006C5CF8 switches on it and
  * returns without filling when it exceeds 8. */
-void gt5p_descr(unsigned target, unsigned obj)
+void gt5p_descr(unsigned target, unsigned obj, unsigned toc)
 {
     static unsigned n;
     if (n++ >= 26) return;
-    fprintf(stderr, "[descr] #%u obj=0x%08X -> func_%08X\n", n, obj, target);
+    { /* case 8 reads a global registry through the callee TOC:
+             *   lwz r9, -27716(r2) ; lwz r3, 6276(r9)
+             * Reading it here says whether it is populated at each call. */
+            unsigned tbl = vm_read32((unsigned)(toc - 27716));
+            unsigned reg = tbl ? vm_read32(tbl + 6276) : 0;
+            fprintf(stderr, "[descr] #%u index=%u -> func_%08X  registry=0x%08X%s\n",
+
+                    n, obj, target, reg, reg ? "" : "   <-- NULL"); }
     fflush(stderr);
 }

@@ -590,11 +590,25 @@ lwz r3, 6276(r9)        ; a global registry pointer
 bl  0x006C5C2C          ; fetch the descriptor through it
 ```
 
-That is the fact. The implication — that the registry at `[[r2-27716]+6276]` is
-not populated when the earliest reservations are measured, and is by the time
-they are filled — is a **hypothesis this session did not verify**, and given how
-many readings needed correcting here it should be checked before being built on.
-Logging that pointer's value at the two call sites settles it in one run.
+That is the fact. The implication — that the pointer at `[[r2-27716]+6276]` is
+not populated when the earliest reservations are measured — was flagged as an
+unverified hypothesis, then checked. **It is wrong**, and the check took one
+run:
+
+```
+#5 index=7 -> func_006C5CF8  registry=0x20039780  count=0   ""
+#7 index=7 -> func_006C5CF8  registry=0x20039780  count=31  "lfe-send, ..."
+#8 index=8 -> func_006C5CF8  registry=0x20039780  count=0   ""
+```
+
+The pointer is non-null and **identical on every call**, empty results and
+populated alike. Worse for the reading, `0x20039780` is the SPURS job chain
+address that appears throughout these logs — so it is not a descriptor registry
+at all.
+
+So the difference is neither the dispatch index nor that global. Whatever
+`func_006C5C2C` consults to decide it has a descriptor to give, it is something
+this session did not reach.
 
 That is where the trail stops. The remaining question is what initialises that
 registry and when — an ordinary question about the caller's loop, not
