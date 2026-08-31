@@ -214,6 +214,26 @@ free, or a free-list insertion that keeps a node it should have unlinked. The
 size the allocator then reports is whatever the live data happens to look like,
 which is why it differs every run and why the asset count is a spread.
 
+#### It is not a locking race
+
+A free list that holds a live block, damaged in a different place every run,
+looks exactly like broken mutual exclusion, so that was tested directly:
+`GT5P_LWMUTEX_GLOBAL=1` forces every guest lwmutex onto one global critical
+section, serialising all of them.
+
+```
+per-slot locks    108 files / 3 bad nodes    7 / 4    108 / 3
+one global lock     0 files / 0 bad nodes    7 / 4      7 / 4
+```
+
+The same three or four corrupt nodes appear either way. Serialising every lock
+in the title does not prevent it, so the damage is single-threaded logic, not a
+race — and the run-to-run variation comes from *when* the walk reaches a bad
+node, not from whether one gets created.
+
+That is worth having: it removes concurrency from the search, which is the
+expensive place to look.
+
 #### What this rules in
 
 The decoder that wrote nearly 4 MB past its 32 KB window would corrupt exactly
