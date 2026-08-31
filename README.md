@@ -715,14 +715,30 @@ never captured:
 0x006CF188  branch if r0 == r11     -> 0x006CF4A8
 ```
 
-`gt5p_alloc_pre` only forwards `r3`-`r5`, which is why identical `(image, size)`
-pairs looked indistinguishable while producing different results — the deciding
-values are in `r6`-`r10` and were never logged.
+The obvious conclusion — that the deciding values live in `r6`-`r10`, which the
+wrapper never forwarded — was tested by widening the wrapper. **It is wrong.**
 
-So the next step is mechanical rather than speculative: widen the instrumentation
-wrapper for this one function to carry `r6`-`r10`, run once, and compare an
-accepted call against a rejected one. The branch that differs is the answer, and
-the five candidates above are the entire search space.
+```
+[cf080] r6=0 r7=0 r8=0 r9=0 r10=0 -> 0x20039780
+[cf080] r6=0 r7=0 r8=0 r9=0 r10=0 -> 0x00000000   REJECTED
+[cf080] r6=0 r7=0 r8=0 r9=0 r10=0 -> 0x20039780
+[cf080] r6=0 r7=0 r8=0 r9=0 r10=0 -> 0x00000000   REJECTED
+```
+
+Every argument register is identical across accepted and rejected calls. The
+inputs really are the same, so the rejection depends on **state inside the job
+chain object or in globals**, not on anything passed in.
+
+That also corrects the branch reading above: `r8` and `r10` at those tests are
+values the function has computed by then, not the arguments of the same name.
+Reading a comparison's register operand and assuming it is still the incoming
+argument is a mistake worth naming, because it is easy to make when skimming a
+291-instruction function for its exits.
+
+So the honest state is: `func_006CF080` returns zero for some calls and a valid
+handle for others with **identical inputs**, and which internal value differs is
+not established. Getting it needs the five exit conditions instrumented where
+they are evaluated, rather than inferred from the register names at the branch.
 
 That is where the trail stops. The remaining question is what initialises that
 registry and when — an ordinary question about the caller's loop, not

@@ -235,3 +235,18 @@ void gt5p_descr(unsigned target, unsigned obj, unsigned toc)
                     n, obj, target, reg, reg ? "" : "   <-- NULL"); }
     fflush(stderr);
 }
+
+/* func_006CF080 rejects and accepts identical (image, size) pairs. Its five
+ * non-capacity exits are gated on r8, r10 and comparisons involving r0/r11 --
+ * none of which the standard wrapper forwards. Print the rest of the argument
+ * register set beside the result so an accepted call and a rejected one can be
+ * compared directly. */
+void gt5p_cf080(unsigned r6, unsigned r7, unsigned r8, unsigned r9,
+                unsigned r10, unsigned ret)
+{
+    static int n;
+    if (n++ >= 24) return;
+    fprintf(stderr, "[cf080] r6=0x%08X r7=0x%08X r8=0x%08X r9=0x%08X r10=0x%08X -> 0x%08X%s\n",
+            r6, r7, r8, r9, r10, ret, ret ? "" : "   REJECTED");
+    fflush(stderr);
+}
