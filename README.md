@@ -28,7 +28,97 @@ RSX pipeline built by the studio that cared most about it, and Polyphony's own
 packed filesystem holding 1.8 GB of assets. Tokyo Jungle, the previous most
 complex target, is 7,924 functions.
 
-## Status: Phase 14 — The Switch Statements Were Invisible
+## Status: Phase 15 — longjmp Has To Actually Jump
+
+> `func_00A0A57C` is the PS3 libc `longjmp`. It restores `r1`, `r2`, `r13`-`r31`,
+> `LR` and `CR` from the buffer and ends in `blr`, so on hardware the branch goes
+> to the address it just put in `LR` — the `setjmp` call site — and not to
+> `longjmp`'s own caller. A static recompiler cannot express that, and
+> `ppu_lifter` does not try: it emits that `blr` as a plain `return;`.
+>
+> So the lifted `longjmp` restored the whole guest register file and then
+> returned to whoever called it. That was enough to hold this port at four
+> files for the entire project.
+>
+> ```
+>                        before          after
+> PDIPFS files opened    4               108-118
+> SPU job dispatches     159             113,765
+> RSX SetTile            0               6
+> RSX SetZcull           0               3
+> SetDisplayBuffer       0               2
+> SetPrepareFlip         0               1
+> ```
+>
+> GT5P's LZ decoder aborts a decompression by `longjmp`-ing out of it.
+> `func_00919060` arms a buffer at `obj+0x186C`; when the input runs dry,
+> `func_009200F0` fires it. With the jump modelled as a return, control resumed
+> **inside a 32 KB window-copy loop** carrying `func_00919060`'s registers —
+> loop bound `0`, wrap pointer set to the object's own address — so the copy
+> could never terminate and wrote bytes nearly 4 MB past its window. See
+> [Finding It](#finding-it) for how that was cornered, and
+> [Making longjmp Jump](#making-longjmp-jump) for the fix.
+>
+> The game now reads its own content in bulk, runs a continuous SPU job loop,
+> and configures tiled render targets, Zcull, double-buffered display and a
+> flip handler. It prepares one flip and does not go on to a second, so there
+> is no frame loop yet and **still no attract mode**. Runs also vary — most
+> stop at 7 files, roughly one in four reaches 108 — so a race sits behind
+> this that the fix did not address.
+
+### Making longjmp Jump
+
+There are exactly two `setjmp` sites and three `longjmp` sites in the whole
+binary, which makes a targeted fix practical. `scripts/setjmp_patch.py`:
+
+- expands a **real host `setjmp`** at each guest-`setjmp` call site — it has to
+  be lexically in the frame that will be jumped back into, so it cannot hide
+  behind a helper;
+- keeps the original lifted `longjmp` body, which is what restores the guest
+  register file, and then fires a host `longjmp` to reach the site.
+
+The guest therefore resumes with exactly the register state it expects; only
+the transfer of control becomes host-side. Buffers are tracked on a stack and
+each arming function's depth is restored on the way out, so a buffer whose
+frame has returned can never be jumped into. Frames jumped over hold no C++
+objects with destructors — lifted code is plain C in C++ clothing — so the
+unwind is safe.
+
+Re-run it after every re-lift, like `instrument_alloc.py`; `generated/` is
+rebuilt wholesale.
+
+### Finding It
+
+Worth recording, because the symptom pointed nowhere near the cause. The chain
+from the stalled file to the decoder took six layers of vtable dispatch, and at
+the bottom `func_00956D20` was entered twice and returned once. It had no
+blocking primitive in it, so it was spinning — but 2,280 bytes of dense bit
+manipulation is not something to read hoping to spot the loop.
+
+`scripts/bbcount.py` settles it mechanically: drop a counter on every label in
+one lifted function and print the hottest. Four blocks at
+`0x00957100`-`0x00957118` took 49.8 million hits each. Sampling that loop's
+registers is what actually named the bug:
+
+```
+iteration          r28 wrap        r26 bound        r31 cursor
+        1     base + 0x8000      base + 13        base + 9
+    1,000     base + 0x8000      base + 1216      base + 1051
+1,000,000     base + 0x8000      base + 25788     base + 25675
+5,000,000     0x0112D640         0                base + 3,992,907
+```
+
+A million iterations of a perfectly healthy circular window copy, and then the
+wrap and bound become values from a completely different function. Registers
+that change without any instruction in the loop writing them means a call did
+it — and the only call on that path was the one that fires the `longjmp`.
+
+Instrumenting the *setup* block closed it: the loop was always entered with a
+correct bound and wrap, every time. So it was never bad input, it was a bad
+return.
+
+
+## Phase 14 — The Switch Statements Were Invisible
 
 > `find_functions` walks direct branches. A `bctr` through a jump table is a
 > dead end for it, so every case that *only* a computed branch reaches looks
