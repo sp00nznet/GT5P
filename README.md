@@ -602,6 +602,19 @@ populates the list" — the list is a constant. It is **why the copy into scratc
 does not happen on the measuring pass**. The data is always there; only the
 transfer is conditional.
 
+One dead end recorded so it is not repeated. The obvious move is to point the
+write watch at `0x20085BE0` and catch the copy. It does not work: over a full
+run, `LBP_WW=0x20085BE0 LBP_WW_LEN=0x80` catches **44 writes and not one of
+them is non-zero** — only `memset` zero-fill and eight more zeros from
+`func_006C2CC8`. Yet the enumerator has been observed reading populated
+descriptor text at that same address in another run.
+
+The address is a heap scratch buffer and is not stable enough across runs to
+pin a watch to. Catching the copy needs the watch aimed at **the enumerator's
+argument as it is actually passed**, not at a fixed address remembered from an
+earlier boot — which means arming it from inside the probe rather than from the
+environment.
+
 The `[arena]` probe prints the sequences; adding the guest caller to each entry
 identifies the code that walks the list, and a write watch on the list head
 identifies what fills it. Both techniques are already used elsewhere in this
