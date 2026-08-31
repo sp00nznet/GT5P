@@ -507,6 +507,50 @@ objects those first thirteen belong to, and what sets their descriptor pointer,
 is the next thing to find — and it is a question about object initialisation
 order, not about memory corruption.
 
+#### The descriptor virtual, and the end of the trail
+
+`func_006A3D70` has exactly one caller, `func_006C2D5C`, and immediately before
+the count there is a `bctrl`:
+
+```
+006C2DFC  bctrl                    ; obj->method(...) fills the scratch buffer
+006C2E04  lwz r3, 184(r29)         ; the scratch pointer
+006C2E08  bl  func_006A3D70        ; count its tokens
+```
+
+Logging the resolved target alongside each count settles what varies:
+
+```
+#5 obj=0x010CFFBC -> func_006C5CF8   count=0   ""
+#6 obj=0x010CFFBC -> func_006C5CF8   count=0   ""
+#7 obj=0x010CFFBC -> func_006C5CF8   count=0   ""
+#8 obj=0x010CFFBC -> func_006C5CF8   count=31  "lfe-send, F:0:100, 0, LFE send level..."
+```
+
+**Same object, same method, three empty results and then the real descriptor.**
+It is not a different virtual being dispatched for the early calls, and it is
+not a different object — `func_006C5CF8` simply produces nothing until
+something it depends on is ready. (`func_006BEE34` covers the first four calls
+and behaves the same way.)
+
+So the whole chain terminates in one function:
+
+```
+func_006C5CF8 yields an empty descriptor on early calls
+  -> the token count is 0 instead of 31
+  -> the reservation is sized 0 instead of 620
+  -> arena 0xCFEFF308 is short by exactly 0x468
+  -> the fill pass overruns a free-list node; its end pointer goes out of arena
+  -> the free-space query reports 2.6 GB; the giant allocation is granted
+  -> arena bookkeeping is destroyed; main spins on 264 bytes forever
+  -> the loader is never asked for anything: no assets, no frame, no attract mode
+```
+
+What `func_006C5CF8` waits on is the one thing left to read, and it is an
+ordinary question about a single method rather than anything to do with memory
+corruption, the allocator, the decompressor or the loader — all of which were
+suspected here in turn and each cleared by measurement.
+
 #### What is directly measured and stands
 
 Independent of any pass model, each of these is a direct observation:

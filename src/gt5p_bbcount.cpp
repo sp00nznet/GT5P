@@ -213,3 +213,16 @@ extern "C" int gt5p_freelist_bad(unsigned heap)
     }
     return bad;
 }
+
+/* The virtual immediately before the token count in func_006C2D5C is what
+ * fills the scratch buffer with an object's parameter descriptor. The first
+ * thirteen counts come back empty, so either a different method is being
+ * dispatched for those objects or the same one is doing nothing. Print the
+ * resolved target and the object so the two groups can be told apart. */
+void gt5p_descr(unsigned target, unsigned obj)
+{
+    static unsigned n;
+    if (n++ >= 26) return;
+    fprintf(stderr, "[descr] #%u obj=0x%08X -> func_%08X\n", n, obj, target);
+    fflush(stderr);
+}
