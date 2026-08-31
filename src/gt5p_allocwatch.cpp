@@ -732,6 +732,25 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
 extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
                                 uint32_t a5, uint32_t ret)
 {
+    /* func_006CF080 registers an SPU audio effect module and begins with two
+     * capacity checks against the SPURS job chain:
+     *     [jc+17024] + 1  >= 0x80   -> reject
+     *     [jc+19096] + 3  >= 0x101  -> reject
+     * It rejects socedmix, socelverbx and soceumix while accepting soceamp,
+     * socethru and soceagc_gt5, so print both counters with the result and see
+     * which limit is being hit. */
+    if (strstr(who, "006CF080")) {
+        static int n = 0;
+        if (n++ < 40) {
+            unsigned c1 = vm_read32(a3 + 17024);
+            unsigned c2 = vm_read32(a3 + 19096);
+            fprintf(stderr, "[cap] jc=0x%08X img=0x%08X size=%u  count=%u/128  slots=%u/257  -> 0x%08X%s\n",
+                    a3, a4, a5, c1 + 1, c2 + 3, ret,
+                    ret ? "" : "   REJECTED");
+            fflush(stderr);
+        }
+    }
+
     /* func_006C5B60 is the descriptor lookup: it calls five helpers in
      * sequence and the scratch buffer either ends up with text or does not.
      * Log each so an empty call and a populated one can be compared -- the

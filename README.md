@@ -674,8 +674,37 @@ cannot process them, one of which is 36,448 bytes — exactly `socedmix`'s
 they are SPURS job LS dumps, while `socedmix` begins `43 F7 3A 02 43 87 A6 82`.
 Same size, different data, and one command to check.
 
-So the next read is `func_006CF080`: why it registers `soceamp`, `socethru` and
-`soceagc_gt5` and rejects `socedmix`, `socelverbx` and `soceumix`.
+`func_006CF080` opens with two capacity checks against the job chain:
+
+```
+[jc+17024] + 1  >= 0x80    -> reject
+[jc+19096] + 3  >= 0x101   -> reject
+```
+
+Neither is the cause. Logging both with each result shows the counters idling
+far below their limits — and something more useful:
+
+```
+[cap] img=0x00F13500 size=2278  count=1/128  slots=4/257  -> 0x00000000   REJECTED
+[cap] img=0x00F13500 size=2278  count=1/128  slots=4/257  -> 0x20039780
+[cap] img=0x00F13500 size=2278  count=1/128  slots=4/257  -> 0x00000000   REJECTED
+[cap] img=0x00F13500 size=2278  count=1/128  slots=4/257  -> 0x20039780
+```
+
+**The same image at the same size is both rejected and accepted.** So the
+rejection is state-dependent, not a property of the module, and no per-module
+explanation can be right.
+
+That also qualifies the section above. The sizes reaching `func_006CF080`
+(`4322`, `3353`, `2278`) do not match the descriptor table's (`0x8E60`,
+`0x6300`, `0x4FE0`), so the mapping from "the table entry at `0x01079C0C`" to
+"these registration calls" was never established — the module *names* are solid,
+the claim that `socedmix` specifically is the one failing is not.
+
+What is left, and it is a good question to inherit: `func_006CF080` accepts and
+rejects identical requests depending on state. Finding which state means
+reading its 291 instructions for the branch that reaches the failure path at
+`0x006CF3C4` other than the two capacity checks, then logging that condition.
 
 That is where the trail stops. The remaining question is what initialises that
 registry and when — an ordinary question about the caller's loop, not
