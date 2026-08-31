@@ -566,12 +566,27 @@ paired samples**, not at scale. A broader test needs the `[look]` and `[enum]`
 probes re-instrumented, which the clean shipping build deliberately does not
 carry.
 
-So the accurate statement is neither "closed" nor "unfounded": the chain from
-"empty descriptor" down to "no attract mode" is solid, and the step above it
-rests on a two-sample correlation with a mechanism that reads more like
-*nothing to do* than *failure*. Anyone continuing should widen that correlation
-first; it is one rebuild and it decides whether this whole thread is the right
-one.
+That widening was then done, and it gives a sharper answer than either earlier
+version. Pairing every enumerator call with its nearest preceding
+`func_006CF50C` across a full boot:
+
+```
+CF50C == 0  and count == 0 :  6
+CF50C == 0  and count >  0 :  0      <- never happens
+CF50C != 0  and count == 0 :  1      <- counterexample
+CF50C != 0  and count >  0 :  1
+```
+
+Eight pairs, seven agreeing. The shape matters more than the ratio: a zero from
+`func_006CF50C` is **sufficient** for an empty descriptor — it never once
+coincided with a populated one — but it is **not necessary**, because the
+lookup also succeeded on a call whose descriptor stayed empty.
+
+So the link is real and one-directional. When the lookup fails the descriptor is
+empty and the arena under-measures; but there is at least one other route to an
+empty descriptor that this work never identified. Fixing whatever makes
+`func_006CF50C` return zero would therefore be necessary and possibly not
+sufficient, which is worth knowing before anyone spends a session on it.
 
 `func_006C5CF8` turns out to be a **nine-way jump-table dispatch**, one case per
 parameter group:
