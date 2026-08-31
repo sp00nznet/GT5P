@@ -214,58 +214,77 @@ free, or a free-list insertion that keeps a node it should have unlinked. The
 size the allocator then reports is whatever the live data happens to look like,
 which is why it differs every run and why the asset count is a spread.
 
-#### The corrupt nodes sit in the decompressor's buffers
+#### Retraction: `[node+4]` is an end pointer, not a size
 
-Recording every block the allocator hands out, then asking which live block
-contains a bad node, identifies them exactly:
-
-```
-node=0x200AC930  INSIDE live allocation 0x200ABE00..0x200B943A (54842 bytes)
-node=0x2008A06D  INSIDE live allocation 0x20089E80..0x20091E80 (32768 bytes)
-```
-
-Those two sizes are not anonymous. **54,842 bytes is the exact size of
-`PDIPFS/5C/B2`**, the first real asset this port ever managed to read — the
-buffer the compressed file is read into. **32,768 is exactly the LZ window**,
-the `r25 + 0x8000` circular buffer from the `longjmp` investigation above.
-
-So the free list ends up pointing into the two buffers the decompression path
-owns, and the "sizes" it then reports are whatever those buffers happen to
-contain: a pointer (`0x42C80000`), the ASCII `"leve"`. That is why the reported
-free space is enormous and different every run.
-
-This is the same code path that produced the runaway window copy. Fixing
-`longjmp` stopped that loop from writing 4 MB past the window, but something on
-this path still ends with free-list links inside live buffers — either a
-remaining out-of-bounds write, or these buffers being released while the
-decompressor still holds them.
-
-#### A bucket head points into a live block
-
-Tracking which node the walk came from narrows it further. The *first* bad node
-in every run is reached from `0x00000000` — the start of the walk. It is not
-that a good list develops a bad link partway along; **the bucket head itself
-already points into the 54,842-byte asset buffer**, and every node after that is
-whatever the walk finds by following pointers through live data:
+Two claims recorded above this line were wrong, and both are withdrawn. They
+were built on reading the free-list node's `+4` field as a block size. It is
+not. `func_0094F788` does
 
 ```
-node=0x200AC930  reached from node=0x00000000
-                 INSIDE live allocation 0x200ABE00..0x200B943A (54842 bytes)
-node=0x2008A06D  reached from node=0x200AC930  (that one is ALSO inside a live block)
-                 INSIDE live allocation 0x20089E80..0x20091E80 (32768 bytes)
+lwz  r0, 4(r4)         ; r0 = [node+4]
+...
+subf r0, r4, r0        ; r0 = [node+4] - node
 ```
 
-That is the signature of a block being carved out of a free region without the
-stale node being unlinked — the free list still refers to memory the allocator
-has since handed out. `0x200AC930` sits `0xB30` bytes into the block that starts
-at `0x200ABE00`, exactly as a leftover interior node would.
+and `func_00950650` performs the identical subtraction. The field is the
+block's **end pointer**; the size is `end - node`.
 
-`func_0094FF30` is the title's own allocator, lifted. It works on hardware, so
-this is a translation defect in its unlink or split path rather than a design
-flaw, and the technique that settled the window-copy loop applies directly:
-check the lifted output instruction by instruction against the encodings, with
-attention to carry, rotate masks and branch senses. That is the next concrete
-piece of work, and it is bounded — the function is 211 instructions.
+That invalidates the filter those findings rested on. Flagging any node whose
+`+4` exceeded the arena size flagged legitimate nodes:
+
+```
+node=0x200AC9B0  end=0x29EC3940   in arena -> 165,769,104 bytes free
+node=0x200ACA30  end=0x2942C390   in arena -> 154,663,264 bytes free
+```
+
+Those are ordinary large free regions in a mostly-empty 182 MB arena, not
+damage. Three of the six "corrupt" nodes were healthy.
+
+The second claim — that the nodes lay inside live allocations, so blocks were
+free and allocated at once — fails for a separate reason: the cross-reference
+table recorded every block the allocator ever returned and never removed the
+ones that were freed. "Inside a live allocation" therefore only ever meant
+"inside memory that was allocated at some point", which is exactly where a free
+node *should* be. The check could not have produced any other answer.
+
+So there is no evidence for a use-after-free, for the free list containing live
+blocks, or for a bucket head pointing into the asset buffer. Those readings are
+withdrawn.
+
+#### What actually survives
+
+Two nodes really are corrupt, and they are the ones whose end pointer lands
+outside the arena entirely:
+
+```
+node=0x200AC930  end=0x42C80000   OUT OF ARENA
+node=0x2008A06D  end=0x6C657665   OUT OF ARENA  (ASCII "leve")
+```
+
+`0x42C80000` is the long-unexplained `0x42Cxxxxx` value, and it is an end
+pointer rather than an address the allocator wandered to. A node carrying an
+end pointer outside the arena makes `end - node` enormous, which is what
+`func_00950650` reports as free space, and the rest of the chain follows from
+there. That part is unchanged and was measured directly, not inferred:
+
+```
+[layout] capacity=0x9AD29380  used=0x003F5000  remainder=-1701624960
+[giant]  2593342336 bytes granted at 0x656CBC80
+[pred]   func_00937EF0(size=264) -> 0x00000000   calls=2155 zero=2000
+```
+
+The allocator's own translation is clean, checked mechanically rather than by
+eye: `scripts/audit_cmp.py` verifies every compare's signedness, width and CR
+field against its encoding, and `scripts/audit_branch.py` verifies every
+conditional branch's CR bit and sense. Both pass across the whole allocator
+family. Nothing outside the allocator writes to the bucket array either — a
+write watch over `heap+0x00..0x50` names only `func_0094F788`, `func_0094F818`,
+`func_0094FC08` and the constructor.
+
+So the open question is narrower than the retracted version implied: **how does
+a node end up with an end pointer outside the arena**, when the code that
+maintains those nodes is correctly translated and is the only thing writing
+them.
 
 #### It is not a locking race
 
