@@ -318,10 +318,36 @@ recorded for a long time without explaining — the allocator walking into
 the loop was checked against its encoding, including the CR field mapping and
 the `rldicl`/`rlwinm` masks. What it is fed is wrong, not how it was translated.
 
-The open question is what stops this on hardware. The abort deliberately hands
-the decoder a zero-length buffer and expects it to unwind, so there is a guard
-somewhere this port is not reproducing — most likely a field checked before the
-window is set up. That is where the next session starts.
+What stops this on hardware is `longjmp`. The abort does not expect the
+decoder to notice the empty buffer and unwind on its own -- it jumps out of
+it. That is the subject of [Phase 15](#status-phase-15--longjmp-has-to-actually-jump),
+and fixing it took this port from four assets to a hundred and eight.
+
+## Phase 13 — PDIPFS Mounts, and the Game Reads Its Own Data
+
+> A bare run now does this:
+>
+> ```
+> Open /dev_bdvd/PS3_GAME/PARAM.SFO   -> 1040 bytes
+> Open PDIPFS/K/4D                    -> 160 bytes      (volume index)
+> Open PDIPFS/5C/B2                   -> 54,842 bytes   (first real asset)
+> ```
+>
+> **The packed filesystem is mounted.** Everything this document described as a
+> wall — the missing application script, the attract object nothing would drive,
+> the arena that measured an empty container — was downstream of a filesystem
+> that did not exist, and it exists now. See
+> [Three Bugs and a Command Line](#three-bugs-and-a-command-line).
+>
+> The async loader runs too. `PDIEXT::FileDelayLoad` cycles
+> construct -> wait -> **complete** five times over before the sixth hangs, and
+> `sys_cond_signal` — called **zero** times for the whole of this project's life
+> until today — now fires 36 times a boot. Still no attract mode.
+>
+> `GT5P_HEAPPAD` is no longer needed and now hurts: with assets loading, zero
+> allocations fail, and padding every block only shifts the layout into a worse
+> one (4 files without it, 3 with). The heap still walks into `0x42Cxxxxx` —
+> that corruption is real and unfixed — but it no longer wedges anything.
 
 ### Three Bugs and a Command Line
 
