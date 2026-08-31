@@ -198,39 +198,40 @@ What has been ruled out, so the next attempt starts from here:
 - **Not a dead worker.** Every device's worker loop runs, and the decompressor
   thread is alive and reaches its refill.
 
-The live suspicion is the guest null page. The abort deliberately hands the
-decoder an empty buffer at address 0 and expects it to unwind. Here a read at 0
-faults in a zero-filled page and succeeds, so the decoder is fed an endless
-stream of zero bits — and an LZ/Huffman decoder given zero-length codes loops
-rather than terminating. On hardware that read does not quietly return zeros.
-That is a hypothesis, not a finding: it has not been tested yet.
+Counting basic blocks inside the lifted function names the loop directly --
+`scripts/bbcount.py` drops a counter on every label, and four blocks at
+`0x00957100`-`0x00957118` take 49.8 million hits each. That loop is a 32 KB
+circular output window: `r25` is the base, `r28 = r25 + 0x8000` the wrap, `r31`
+the cursor, and the only exit is `r31 == r26`.
 
+Sampling its registers shows it working perfectly and then falling off a cliff:
 
-## Phase 13 — PDIPFS Mounts, and the Game Reads Its Own Data
+```
+iteration          r28 wrap        r26 bound        r31 cursor
+        1     base + 0x8000      base + 13        base + 9
+    1,000     base + 0x8000      base + 1216      base + 1051
+1,000,000     base + 0x8000      base + 25788     base + 25675
+5,000,000     0x0112D640         0                base + 3,992,907
+```
 
-> A bare run now does this:
->
-> ```
-> Open /dev_bdvd/PS3_GAME/PARAM.SFO   -> 1040 bytes
-> Open PDIPFS/K/4D                    -> 160 bytes      (volume index)
-> Open PDIPFS/5C/B2                   -> 54,842 bytes   (first real asset)
-> ```
->
-> **The packed filesystem is mounted.** Everything this document described as a
-> wall — the missing application script, the attract object nothing would drive,
-> the arena that measured an empty container — was downstream of a filesystem
-> that did not exist, and it exists now. See
-> [Three Bugs and a Command Line](#three-bugs-and-a-command-line).
->
-> The async loader runs too. `PDIEXT::FileDelayLoad` cycles
-> construct -> wait -> **complete** five times over before the sixth hangs, and
-> `sys_cond_signal` — called **zero** times for the whole of this project's life
-> until today — now fires 36 times a boot. Still no attract mode.
->
-> `GT5P_HEAPPAD` is no longer needed and now hurts: with assets loading, zero
-> allocations fail, and padding every block only shifts the layout into a worse
-> one (4 files without it, 3 with). The heap still walks into `0x42Cxxxxx` —
-> that corruption is real and unfixed — but it no longer wedges anything.
+Up to a million iterations the wrap is exact and the bound tracks just ahead of
+the cursor — this is a decoder doing its job. Then `r26` becomes **zero** — the
+null input buffer the abort installed, propagated into the loop bound — and
+`r28` becomes the object's own address. `r31 == r26` can now never hold, the
+cursor never reaches the wrap either, and the loop writes bytes at steadily
+climbing addresses: nearly 4 MB past the window and still going.
+
+So this is not merely a hang. It is an unbounded write walking through guest
+memory, and it is a strong candidate for the heap damage this document has
+recorded for a long time without explaining — the allocator walking into
+`0x42Cxxxxx`. The decoder is fully and correctly lifted; every instruction in
+the loop was checked against its encoding, including the CR field mapping and
+the `rldicl`/`rlwinm` masks. What it is fed is wrong, not how it was translated.
+
+The open question is what stops this on hardware. The abort deliberately hands
+the decoder a zero-length buffer and expects it to unwind, so there is a guard
+somewhere this port is not reproducing — most likely a field checked before the
+window is set up. That is where the next session starts.
 
 ### Three Bugs and a Command Line
 

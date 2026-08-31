@@ -69,6 +69,7 @@ add_executable(gt5p
     src/main.cpp
     src/gt5p_present.cpp
     src/gt5p_allocwatch.cpp
+    src/gt5p_bbcount.cpp
     ${GT5P_SPU_SOURCES}
     src/gen/ppu_hle_nids.cpp    # generated: NID -> ps3recomp lib handler
     ${PS3RECOMP_PPU_SOURCES}

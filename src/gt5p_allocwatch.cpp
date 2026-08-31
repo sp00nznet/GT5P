@@ -213,6 +213,19 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
         }
     }
 
+    /* func_00956D20's window copy starts its cursor at r25 + [obj+42] but
+     * bounds it at r25 + ([obj+40] & 0x7FFF), and wraps at r25 + 0x8000.
+     * [obj+42] is a bare lhz, so a value >= 0x8000 puts the cursor outside
+     * the 32 KB window: it never reaches the wrap and never equals the
+     * bound, which is exactly the 50M-iteration spin. Print both. */
+    if (strstr(who, "00956D20")) {
+        uint32_t w40 = (vm_read32(a3_ + 40) >> 16) & 0xFFFF;
+        uint32_t w42 = vm_read32(a3_ + 40) & 0xFFFF;
+        fprintf(stderr, "[win] obj=0x%08X [+40]=0x%04X [+42]=0x%04X%s\n",
+                a3_, w40, w42, w42 >= 0x8000 ? "   <-- OUTSIDE THE WINDOW" : "");
+        fflush(stderr);
+    }
+
     if (strstr(who, "00916DD0")) {
         uint32_t obj = vm_read32(a4 + 12);
         g_expand_obj = obj;
