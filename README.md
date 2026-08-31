@@ -286,6 +286,38 @@ a node end up with an end pointer outside the arena**, when the code that
 maintains those nodes is correctly translated and is the only thing writing
 them.
 
+#### Who writes the node fields
+
+The bucket heads are never bad. Every value written into the bucket array over
+a whole boot is either zero or a valid in-arena pointer (217 distinct values,
+none outside `0x20000000..0x2ADFFF80`), and `0x200AC930` — the node the walk
+trips over — is never installed as a head at all. Heads never exceed
+`0x20089F20`.
+
+So the walk starts from a good head and follows a `next` into trouble. Watching
+the 32 bytes at that highest head says who touches them:
+
+```
+[ww] 0x20089F2C <- 0x0        (w8) guest-fn=0x00A0B970   <- memset
+[ww] 0x20089F2C <- 0xC2C0A3D7 (w4) guest-fn=0x006C2D5C
+     writers over the window: func_00A0B970 x16, func_006C2D5C x6, func_006A4400 x2
+```
+
+`0x20089F2C` is a node's `next` field. `0xC2C0A3D7` is not a pointer — as
+IEEE-754 it is about `-96.3`. Float data is being written into the bytes the
+allocator reads as list linkage.
+
+And one of the three writers is **`func_006A4400`** — the arena builder whose
+measuring pass and filling pass disagree by `0x468` bytes, recorded in this
+document long before any of this and never explained. It writes into the same
+node.
+
+One caveat, stated because three readings were withdrawn above for exactly this
+kind of gap: this shows *who writes those bytes*, not *whether the block was on
+the free list at the time*. Establishing the ordering — free, then written, then
+walked — is the next measurement, and it is the one that would turn this from a
+strong association into a cause.
+
 #### It is not a locking race
 
 A free list that holds a live block, damaged in a different place every run,
