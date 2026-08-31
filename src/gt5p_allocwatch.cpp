@@ -208,8 +208,14 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
     if (strstr(who, "0091B480")) {
         static int n = 0;
         if (n++ < 30)
-            fprintf(stderr, "[worker] pred req=0x%08X f64=%u\n",
-                    a3_, vm_read32(a3_ + 0x64));
+            /* Print more than the one field. If only +0x64 is wrong the write
+             * was targeted; if the whole object reads zero the worker is
+             * looking at different memory entirely. */
+            fprintf(stderr, "[worker] pred req=0x%08X f64=%u f7C=%u f8C=%u "
+                            "vt=0x%08X f20=0x%08X\n",
+                    a3_, vm_read32(a3_ + 0x64), vm_read32(a3_ + 0x7C),
+                    vm_read32(a3_ + 0x8C), vm_read32(a3_),
+                    vm_read32(a3_ + 0x20));
     }
 
     if (strstr(who, "00917380")) {
