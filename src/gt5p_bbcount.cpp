@@ -80,3 +80,22 @@ extern "C" void gt5p_bb_setup(unsigned long long r25, unsigned long long r26,
             r31, (long long)(r31 - r25), r24);
     fflush(stderr);
 }
+
+/* func_006679A0 lays out ~28 aligned buffers and then allocates the remainder
+ * as `capacity - accumulated`. When the accumulated total exceeds the
+ * capacity the subtraction goes negative, gets zero-extended to 32 bits, and
+ * becomes a 2.6 GB allocation request that the allocator grants -- which is
+ * what wrecks the arena and leaves main retrying 264 bytes forever. Print both
+ * operands so it is clear which side is wrong. */
+/* C++ linkage: the call site is declared inside lifted C++ code, where an
+ * extern "C" declaration is not permitted at block scope. */
+void gt5p_layout(unsigned long long capacity, unsigned long long used)
+{
+    static int n = 0;
+    if (n++ >= 6) return;
+    long long rem = (long long)(int)(unsigned)capacity - (long long)(int)(unsigned)used;
+    fprintf(stderr, "[layout] capacity=0x%08X (%llu)  used=0x%08X (%llu)  remainder=%lld%s\n",
+            (unsigned)capacity, capacity, (unsigned)used, used, rem,
+            rem < 0 ? "   <-- NEGATIVE" : "");
+    fflush(stderr);
+}

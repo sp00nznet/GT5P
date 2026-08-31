@@ -118,6 +118,79 @@ correct bound and wrap, every time. So it was never bad input, it was a bad
 return.
 
 
+### The Boot Does Not Stall On I/O
+
+It runs out of heap, and it runs out of heap because the free list is corrupt.
+
+Every thread dump in this document was blind to the one thread that matters.
+`main` is created by `src/main.cpp`, not by `sys_ppu_thread_create`, so it never
+appears in `g_ppu_threads` and `GT5P_THREADS=1` has never shown it. `GT5P_MAINSTACK`
+unwinds it directly, and it has been sitting in the same place the whole time:
+
+```
+func_00010230 → func_00010368 → func_000107F8 → func_00011A28
+  → func_00687C70 → func_00687F18 → func_006679A0
+  → func_00937EF0 → func_00937E2C → func_0094FF30
+```
+
+`func_009F3FF0` is `while (alloc(size) == 0) { run a reclaim hook; yield 2 ms }`,
+and instrumenting the allocator says exactly what it is retrying:
+
+```
+[pred] func_00937EF0(size=264) -> 0x00000000   calls=2155 zero=2000
+[oom]  alloc(heap=0x011806B0 size=264 align=16) FAILED
+       hdr: 00F76D48 20000000 2ADFFF80 20000000
+```
+
+**Main is spinning on a 264-byte allocation** against a 182 MB arena
+(`0x20000000..0x2ADFFF80`). Not waiting on a file, a decompressor, an SPU job,
+a flip or a lock. Out of memory.
+
+#### Why a 182 MB arena cannot serve 264 bytes
+
+One allocation eats it:
+
+```
+[layout] capacity=0x9AD29380 (2597491584)  used=0x003F5000 (4149248)  remainder=-1701624960
+[giant]  2593342336 bytes (0x9A934380) granted at 0x656CBC80
+```
+
+`func_006679A0` lays out its buffers and then claims the remainder as
+`capacity - used`. `used` is a sane 4 MB. The **capacity is already garbage
+coming in** — 2.6 GB, from `func_00937CE0` → `func_00950650`, which walks the
+heap's free list looking for the largest free block. So a free-list node is
+carrying a nonsense size, and:
+
+1. the query reports 2.6 GB free,
+2. `func_006679A0` believes it and asks for the remainder,
+3. `func_0094FF30` **grants** it, handing back `0x656CBC80` — far outside the
+   arena,
+4. the arena's bookkeeping is now destroyed and every later allocation fails,
+5. main retries 264 bytes forever and the boot stops.
+
+The size varies between runs (`0x9A934380`, `0xFFFFFFFF`), which is what a
+corrupt node looks like rather than a fixed miscalculation, and it is why the
+outcome is a spread rather than a constant.
+
+This is the long-standing heap damage recorded in this document — the allocator
+"walking into `0x42Cxxxxx`" — finally connected to a symptom. It also explains
+why the asset count moves around: how far the boot gets depends on when the
+free list is trampled.
+
+#### What this rules in
+
+The decoder that wrote nearly 4 MB past its 32 KB window would corrupt exactly
+this structure, and that is fixed. Corruption still happens, so either the fix
+did not catch every path into that loop or there is a second writer. That is a
+much better question than the one this document was asking a day ago, and it is
+answerable with the write watch (`LBP_WW`) pointed at a free-list node once one
+is known to be live.
+
+Reproduce with `PS3_VERBOSE=0` and the allocator instrumented
+(`python scripts/instrument_alloc.py 0094FF30`); `GT5P_MAINSTACK=10` prints the
+main thread's guest chain, which is the piece that was missing.
+
+
 ### Where It Stops Now
 
 Two outcomes, and which one a run gets is a coin toss weighted against us —

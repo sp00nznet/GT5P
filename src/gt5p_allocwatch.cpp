@@ -682,6 +682,35 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
 extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
                                 uint32_t a5, uint32_t ret)
 {
+    /* func_0094FF30 is the game's allocator, (heap, size, align) -> block.
+     *
+     * The boot does not stall on I/O. Main parks in func_009F3FF0 retrying a
+     * 264-byte allocation forever, and it fails because ONE request for
+     * 0x9A934380 bytes -- 2.6 GB, against a 182 MB arena -- is granted, which
+     * hands back a pointer outside the arena and wrecks the bookkeeping.
+     *
+     * Print every request over a megabyte, flag any result outside the arena,
+     * and dump the guest call stack for an obviously garbage size so the caller
+     * is named rather than guessed at. */
+    if (strstr(who, "0094FF30") && ret) {
+        static int big = 0;
+        if (a4 > (1u << 20) && big++ < 14) {
+            int outside = (ret < 0x20000000u || ret >= 0x2ADFFF80u);
+            fprintf(stderr, "[big] heap=0x%08X size=%u (0x%08X) align=%u -> 0x%08X%s\n",
+                    a3, a4, a4, a5, ret, outside ? "   <-- OUTSIDE ARENA" : "");
+            fflush(stderr);
+        }
+        if (a4 > (256u << 20)) {
+            static int once = 0;
+            if (!once++) {
+                fprintf(stderr, "[giant] %u bytes (0x%08X) granted at 0x%08X -- caller:\n",
+                        a4, a4, ret);
+                ppu_guest_callstack("giant-alloc");
+                fflush(stderr);
+            }
+        }
+    }
+
     /* func_0091D7A0 calls func_0091D510 and then slot 29 (vtable+116) of
      * whatever it returns. Nothing static names that target, so resolve it
      * from the returned object the moment the call comes back -- one rebuild
