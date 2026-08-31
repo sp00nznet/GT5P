@@ -468,6 +468,47 @@ That is the whole handoff: **find why `func_006C2D5C` sizes this reservation at
 0 on the measuring pass and 620 on the filling pass.** Everything upstream and
 downstream of that question is measured and written down.
 
+#### The last link: an enumerator that is empty too early
+
+`func_006C2D5C` computes the reservation size arithmetically, so there is no
+ambiguity about where 620 comes from:
+
+```
+r3 = func_006A3D70(arena_ctx)      ; a count
+r5 = (r3 << 2) + (r3 << 4)         ; = count * 20
+func_006A4400(ctx, out, r5)
+```
+
+`620 / 20 = 31`. So the count is **31 on the filling pass and 0 on the measuring
+pass** — the entire `0x468` discrepancy is `31 * 20 = 620` minus nothing.
+
+`func_006A3D70` is an enumerator:
+
+```
+count = 0
+loop:  item = func_006A3D14(ctx, buf)     ; fetch next entry
+       if (*item == 0 || buf[0] == 0) break
+       count++
+return count
+```
+
+So whatever it walks is **empty when the arena is measured and holds 31 entries
+when the arena is filled**. The layout is sized against an empty collection and
+then written with a full one.
+
+That is the defect, stated as precisely as this project can state it without
+guessing: *why is that collection empty at measure time?* Either something that
+populates it has not run yet on this port when it would have on hardware, or
+`func_006A3D14` fails its first pass here. Both are answerable by instrumenting
+`func_006A3D70` and `func_006A3D14` across the two passes — the same bracketing
+that produced every result above it.
+
+One note for whoever picks this up: this document previously recorded
+`func_006A3D70` as "returns 0 on all 18 calls", which was read at the time as
+the function being broken. It is not broken. It returns 0 *on the measuring
+pass* and a real count on the filling pass, and that difference is the bug
+rather than the zero itself.
+
 #### It is not a locking race
 
 A free list that holds a live block, damaged in a different place every run,
