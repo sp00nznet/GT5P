@@ -275,16 +275,28 @@ the SPURS shutdown immediately before it are the threads to pull. Recorded this
 way rather than as a finding because a confident wrong answer here would cost
 the next session more than an honest gap.
 
-That still leaves three distinct outcomes from one binary:
+That still leaves a spread of outcomes from one binary. Ten consecutive runs,
+`PS3_VERBOSE=0`, same build:
+
+```
+108  3  108  7  7  7  25  7  3  7
+```
+
+Median 7, best 108, against a **deterministic 4 on every run** before the
+longjmp fix. So the floor moved and the ceiling moved a great deal further, but
+a race now decides which you get.
 
 | assets | what it looks like |
 |---|---|
-| 0 | SPURS chain shuts down, then an HLE read-spin on `0x0000000B` |
-| 7 | loads, then the SPURS job chain cycles forever asking for nothing more |
+| 0-3 | SPURS chain shuts down, then an HLE read-spin on `0x0000000B` |
+| 7-25 | loads, then the SPURS job chain cycles forever asking for nothing more |
 | 108 | gets furthest; still never submits an RSX command |
 
-All three are timing-dependent, which points at initialisation or teardown
-order rather than three separate bugs.
+Nothing is *polling* in the stalled runs — `YDKJ_HOTMAP` records no hot address
+at all, and the thread dump shows every PDI worker parked in a condition wait.
+That rules out a spin-wait on a flag nobody sets, and means the stall is a
+wakeup that never arrives. All of the outcomes are timing-dependent, which
+points at initialisation or teardown order rather than three separate bugs.
 
 A measurement note that cost real time here. The runtime turns verbose logging
 on when stderr is redirected, on the reasoning that a redirected stream means
