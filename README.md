@@ -524,8 +524,13 @@ So the chain runs the whole way down:
 | so `MenuGameObject::wait()` never returns | main parks on cond 93 |
 | so the frame loop never starts | `put` stays at `0x10040`, no pixels |
 
-And it plausibly explains the heap corruption too: the arena's measuring pass
-counts a container that is empty precisely because no data has loaded.
+I also guessed this would explain the heap corruption — that the arena's
+measuring pass counted a container which was empty only because no data had
+loaded. **That was wrong.** With PDIPFS mounted and assets loading, the two
+passes still disagree by exactly as much as before: the measuring pass ends at
+cursor `0x58`, the filling pass at `0x4C0`. The overrun is unchanged and is now
+the main source of instability — the same boot variously segfaults, spins in the
+CRT allocator on a near-null free-list pointer, or reaches the clean stall.
 
 **The next question is the right one to ask, and it is a single question:** what
 should call the PDIPFS mount, and why has that not run? Everything else in this

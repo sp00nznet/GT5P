@@ -191,9 +191,18 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
      * func_0091B298 immediately before the wait. Five loads complete
      * and the sixth does not, so the question is whether the sixth is
      * even submitted. */
+    if (strstr(who, "006A3D70")) {
+        static int n = 0;
+        if (n++ < 24)
+            fprintf(stderr, "[count] func_006A3D70(0x%08X)\n", a3_);
+    }
+
     if (strstr(who, "0091B780"))
-        fprintf(stderr, "[dload] submit obj=0x%08X state=%u\n",
-                a3_, vm_read32(a3_ + 0x8C));
+        /* The submit is: lock; if (state) bail; if (!obj->device) { obj->err =
+         * 4; error path } else enqueue(device, obj). So the device pointer at
+         * +0x20 decides whether the request is queued at all -- print it. */
+        fprintf(stderr, "[dload] submit obj=0x%08X state=%u device=0x%08X\n",
+                a3_, vm_read32(a3_ + 0x8C), vm_read32(a3_ + 0x20));
 
     if (strstr(who, "0091B638")) {
         static int n = 0;
