@@ -42,7 +42,7 @@ complex target, is 7,924 functions.
 >
 > ```
 >                        before          after
-> PDIPFS files opened    4               108-118
+> PDIPFS files opened    4               108 at best, 7 median
 > SPU job dispatches     159             113,765
 > RSX SetTile            0               6
 > RSX SetZcull           0               3
@@ -1060,6 +1060,19 @@ difference between a 16 MB log and a 370 KB one.
 > this binary and 1,710 targets sitting in that blind spot.
 >
 > ```
+>
+> Verified on a **clean shipping build** — re-lifted from scratch, only
+> `scripts/setjmp_patch.py` applied, no diagnostic probes compiled in.
+> Eight consecutive runs:
+>
+> ```
+> 108  108  7  7  7  7  108  7      unique PDIPFS assets
+> ```
+>
+> Three of eight reach 108, median 7, against a deterministic 4 before the
+> fix. The distribution matches the instrumented builds, so the probes were
+> not shaping the outcome — worth confirming, since nearly every number in
+> this document was taken with instrumentation compiled in.
 >                       before        after
 > functions lifted      39,660        40,320
 > spins on queue 0      4,398,000     0
