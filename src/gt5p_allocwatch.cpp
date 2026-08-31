@@ -132,12 +132,104 @@ void canary_check(unsigned seq, const char* who)
  * chain is confirmed end to end and the remaining work is the count mismatch
  * alone. If it does not, something else is also wrong and this rules it in.
  */
+/* The five calls func_00917208 makes, in order: the guard, device slot 26,
+ * the state reset, an unnamed step, a release, and the request's slot 9 --
+ * which is func_0091BAD8, the only writer of state 3 in the module. */
+static uint32_t g_expand_obj;      /* PDISTD::FileExpandPSX, from [handler+12] */
+static volatile long g_in_drain;   /* set once func_00917208 is entered */
+
+static int gt5p_drain_step(const char* who)
+{
+    static const char* const names[] = {
+        "0091B480", "00916E40", "00917158", "009169F8", "0091B4F0", "0091BAD8",
+        /* the two scope helpers func_00916E40 calls before the delegate --
+         * hot enough that they are only worth printing inside the window */
+        "00947A68", "0095A298", "0095A0F0", "0091D468", "0091E348",
+        /* the calls func_0091E37C -- the delegate's tail-called
+         * continuation -- makes, one of which does not come back */
+        "0091D530", "0091D5A0", "0091D620", "0091D690", "0091D720",
+        "0091D7A0", "0091D828", "0091E37C", "0091D510",
+        /* func_00925F60 is PFSFSHdd slot 29 -- the packed-file read. It
+         * pushes the operation onto a global queue under a lock and then
+         * hands off; these are every call it makes. */
+        "00925F60", "00916DD0", "00938DA0", "00951CA8", "00938BE8",
+        "0093BF70", "00918C48", "009200F0",
+    };
+    if (!g_in_drain) return 0;
+    for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++)
+        if (strstr(who, names[i])) return 1;
+    return 0;
+}
+
+/* func_00917EB0's switch table at 0x00918004, as offsets from the table base.
+ * Recovered by scripts/jumptables.py; find_functions cannot see through a
+ * bctr, which is why 0x009180AC had to be seeded by hand before the boot
+ * would resolve its indirect calls. */
+static uint32_t gt5p_jt_00918004(uint32_t sel)
+{
+    static const uint32_t t[12] = {
+        0x009180AC, 0x009180AC, 0x0091820C, 0x0091820C, 0x009181F0, 0x009181D4,
+        0x009181B8, 0x0091819C, 0x00918180, 0x00918164, 0x00917F18, 0x00918120,
+    };
+    return sel < 12 ? t[sel] : 0x00917F18u;
+}
+
 static volatile long g_in_pump;   /* set while func_00013060 runs */
 static volatile long g_in_fsinit; /* set while func_00014B58 runs */
 
 extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
                                    uint32_t a4, uint32_t a5_)
 {
+    /* Open the bracket-trace window as soon as the drain is entered. */
+    /* func_00916DD0 calls slot 5 of the object at handler+12 and then
+     * func_00918C48, and it clears that field on the way through -- so read it
+     * here, in the pre-hook, while it is still set. */
+    /* func_009200F0 is the other end of the FileExpandPSX handshake: it waits
+     * on obj+6876, which func_0091FEB8 signals, and it runs on the
+     * decompressor thread. If it is never entered, no such thread exists and
+     * the signal has nobody to wake -- which is why the matching wait on
+     * obj+6816 never returns. func_0091EFD0 is the class's setup. */
+    if (strstr(who, "009200F0") || strstr(who, "0091EFD0")) {
+        static int n = 0;
+        if (strstr(who, "009200F0")) g_expand_obj = a3_;
+        if (n++ < 8) {
+            ppu_guest_callstack("expand-peer");
+            fprintf(stderr, "[expand-peer] %s(0x%08X)\n", who, a3_);
+            fflush(stderr);
+        }
+    }
+
+    if (strstr(who, "00916DD0")) {
+        uint32_t obj = vm_read32(a4 + 12);
+        g_expand_obj = obj;
+        uint32_t vt = obj ? vm_read32(obj) : 0;
+        uint32_t opd = vt ? vm_read32(vt + 20) : 0;
+        fprintf(stderr, "[slot5] obj=0x%08X vt=0x%08X -> func_%08X\n",
+                obj, vt, opd ? vm_read32(opd) : 0);
+        fflush(stderr);
+    }
+
+    /* PDISTD::FileExpandPSX handshake. func_0091FEB8 signals the event at
+     * obj+6876 to wake the decompressor and then waits on obj+6816 for it to
+     * answer -- and that wait never returns. Print every wait/signal that
+     * lands inside this object so it is clear whether a decompressor thread
+     * exists on the other side at all. */
+    if (g_expand_obj && (strstr(who, "00954200") || strstr(who, "009542E0"))) {
+        uint32_t off = a3_ - g_expand_obj;
+        if (off < 8192) {
+            static int n = 0;
+            if (n++ < 300) {
+                uint32_t st = vm_read32(a3_ + 16);
+                fprintf(stderr, "[expand] %s obj+%u  waiter=%u signalled=%u\n",
+                        strstr(who, "009542E0") ? "signal" : "wait  ", off,
+                        (st >> 24) & 0xFF, (st >> 16) & 0xFF);
+                fflush(stderr);
+            }
+        }
+    }
+
+    if (strstr(who, "00917208")) g_in_drain = 1;
+
     /* func_00687F90 is "task->start(); task->wait();" through vtable slots
      * +0x24 and +0x6C. Main reaches the wait and never leaves it -- nothing is
      * ever posted to the PDI worker queue and no condvar is signalled all boot
@@ -185,6 +277,113 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
     /* func_0091B638 is the one state transition that actually runs (66 times a
      * boot). Print which object it advances and from what -- main waits on ONE
      * FileDelayLoad, and the question is whether that one is ever among them. */
+    /* func_00917EB0 is the device worker step -- vtable slot 16, shared by
+     * both file devices. It switches on [req+0x64] through a computed jump
+     * table, and reaches the completion call at 0x00917F90 (virtual slot 9 ==
+     * func_0091BAD8, the ONLY writer of state 3 in this module) only when r24
+     * is non-zero -- which the disassembly sets solely on the switch's default
+     * path. So log the fields the branches actually read. Dedup on the tuple:
+     * a stalled request steps every tick and would otherwise flood. */
+    /* func_00916F48 is device vtable slot 14 -- the worker "run" loop, shared
+     * by both file devices. The async path (sel=0) hands the request to the
+     * dev+64 priority list and returns; only this loop can pick it back up. If
+     * it never runs for a given device, every async request on that device
+     * parks forever, while synchronous ones (sel=2,3,4) still complete because
+     * they never touch the queue. Count calls per device to tell those apart. */
+    /* func_00917208 is device slot 25 -- the drain. The worker reaches it only
+     * when dev+68 (the count of the dev+64 priority list) is non-zero, and it
+     * is what moves a queued request into dev+56 so the step can run it. Both
+     * devices share this implementation, so if it never runs for PFSFSHdd the
+     * worker is not waking, not missing code. */
+    /* The drain (func_00917208) is entered once for the stalled request and
+     * never returns, so the hang is in one of the five calls it makes. Bracket
+     * each: an unmatched ">" names the one that does not come back. */
+    if (gt5p_drain_step(who)) {
+        fprintf(stderr, "  > %s(0x%08X, 0x%08X)\n", who, a3_, a4);
+        fflush(stderr);
+    }
+
+    /* func_0091D468 is where the drain finally hangs: it calls a delegate
+     * whose function pointer lives at handler+24 with the context at
+     * handler+28. Nothing static names that target -- it is stored at
+     * registration time -- so read it at the call and resolve the OPD. */
+    if (strstr(who, "0091D468")) {
+        uint32_t opd = vm_read32(a3_ + 24);
+        fprintf(stderr, "[cb] handler=0x%08X req=0x%08X fn_opd=0x%08X -> func_%08X ctx=0x%08X\n",
+                a3_, a4, opd, opd ? vm_read32(opd) : 0, vm_read32(a3_ + 28));
+        fflush(stderr);
+    }
+
+    if (strstr(who, "00917208")) {
+        static unsigned n[8]; static uint32_t d[8]; static int nd;
+        int i = 0;
+        for (; i < nd; i++) if (d[i] == a3_) break;
+        if (i == nd && nd < 8) { d[nd] = a3_; nd++; }
+        if (i < 8 && ++n[i] <= 20)
+            fprintf(stderr, "[drain] dev=0x%08X call#%u cur=0x%08X count=%u\n",
+                    a3_, n[i], vm_read32(a3_ + 56), vm_read32(a3_ + 68));
+    }
+
+    /* func_009542E0(dev+76) is the wake the promoter sends; func_00954200 is
+     * the worker's matching wait. Print both against the device so a lost
+     * wakeup -- signalled before the worker reached the wait -- is visible as
+     * a signal with no wake after it. */
+    if (strstr(who, "009542E0") || strstr(who, "00954200")) {
+        uint32_t dev = a3_ - 76;
+        if (dev == 0x20094290 || dev == 0x20095E80) {
+            static int n = 0;
+            if (n++ < 400) {
+                fprintf(stderr, "[sync] %s dev=0x%08X cur=0x%08X count=%u run=%u\n",
+                        strstr(who, "009542E0") ? "signal" : "wait  ", dev,
+                        vm_read32(dev + 56), vm_read32(dev + 68),
+                        (vm_read32(dev + 108) >> 24) & 0xFF);
+                fflush(stderr);
+            }
+        }
+    }
+
+    if (strstr(who, "00916F48")) {
+        static uint32_t devs[8]; static unsigned hits[8]; static int nd;
+        int i = 0;
+        for (; i < nd; i++) if (devs[i] == a3_) break;
+        if (i == nd && nd < 8) { devs[nd] = a3_; hits[nd] = 0; nd++; }
+        if (i < 8 && ++hits[i] <= 3)
+            fprintf(stderr, "[run] worker dev=0x%08X call#%u\n", a3_, hits[i]);
+        if (i < 8 && hits[i] == 1000)
+            fprintf(stderr, "[run] worker dev=0x%08X reached 1000 calls\n", a3_);
+    }
+
+    /* func_00926708 is PFSFSHdd's slot 17 -- the async open the stalled
+     * request goes through. func_00920EA8 is GameData's, and that one's async
+     * request does complete, so print both to see if the PFS side even
+     * succeeds: a false return would take the error path and still finish. */
+    if (strstr(who, "00926708") || strstr(who, "00920EA8")) {
+        static int n = 0;
+        if (n++ < 6) {
+            fprintf(stderr, "[open17] %s dev=0x%08X req=0x%08X\n", who, a3_, a4);
+            fflush(stderr);
+        }
+    }
+
+    if (strstr(who, "00917EB0")) {
+        uint32_t sw    = vm_read32(a4 + 0x64);   /* jump-table selector */
+        uint32_t state = vm_read32(a4 + 0x8C);   /* 0->1->0->2, wants 3 */
+        uint32_t c144  = vm_read32(a4 + 0x90);
+        uint32_t d1    = (vm_read32(a4 + 0xD0) >> 16) & 0xFF;   /* byte +0xD1 */
+        static uint32_t seen[64][2];
+        static int nseen = 0;
+        uint32_t key = (sw << 8) | (state & 0xFF);
+        int dup = 0;
+        for (int i = 0; i < nseen; i++)
+            if (seen[i][0] == a4 && seen[i][1] == key) { dup = 1; break; }
+        if (!dup) {
+            if (nseen < 64) { seen[nseen][0] = a4; seen[nseen][1] = key; nseen++; }
+            fprintf(stderr, "[step] dev=0x%08X req=0x%08X vt=0x%08X sel=%u state=%u n=%u b=%u -> case 0x%08X\n",
+                    a3_, a4, vm_read32(a4), sw, state, c144, d1, gt5p_jt_00918004(sw));
+            fflush(stderr);
+        }
+    }
+
     if (strstr(who, "0091B8A8"))
         fprintf(stderr, "[dload] ctor obj=0x%08X\n", a3_);
 
@@ -399,7 +598,7 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
 
     if (strstr(who, "008AF6C8") && a4) {
         static int n = 0;
-        if (n++ < 24) {
+        if (n++ < 400) {
             char buf[160]; unsigned i = 0;
             for (; i < sizeof buf - 1; i++) {
                 uint32_t w = vm_read32((a4 + i) & ~3u);
@@ -456,6 +655,23 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
 extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
                                 uint32_t a5, uint32_t ret)
 {
+    /* func_0091D7A0 calls func_0091D510 and then slot 29 (vtable+116) of
+     * whatever it returns. Nothing static names that target, so resolve it
+     * from the returned object the moment the call comes back -- one rebuild
+     * instead of another round of descend-and-guess. */
+    if (strstr(who, "0091D510") && ret) {
+        uint32_t vt = vm_read32(ret);
+        uint32_t opd = vt ? vm_read32(vt + 116) : 0;
+        fprintf(stderr, "[slot29] obj=0x%08X vt=0x%08X -> func_%08X\n",
+                ret, vt, opd ? vm_read32(opd) : 0);
+        fflush(stderr);
+    }
+
+    if (gt5p_drain_step(who)) {
+        fprintf(stderr, "  < %s ret=0x%08X\n", who, ret);
+        fflush(stderr);
+    }
+
     /* Read [obj+0x64] the instant the constructor returns. It sets that
      * field to 4 unconditionally, and the worker later reads 0 with no
      * store in between that the watch can see -- so establish whether it
