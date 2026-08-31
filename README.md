@@ -240,6 +240,33 @@ this path still ends with free-list links inside live buffers — either a
 remaining out-of-bounds write, or these buffers being released while the
 decompressor still holds them.
 
+#### A bucket head points into a live block
+
+Tracking which node the walk came from narrows it further. The *first* bad node
+in every run is reached from `0x00000000` — the start of the walk. It is not
+that a good list develops a bad link partway along; **the bucket head itself
+already points into the 54,842-byte asset buffer**, and every node after that is
+whatever the walk finds by following pointers through live data:
+
+```
+node=0x200AC930  reached from node=0x00000000
+                 INSIDE live allocation 0x200ABE00..0x200B943A (54842 bytes)
+node=0x2008A06D  reached from node=0x200AC930  (that one is ALSO inside a live block)
+                 INSIDE live allocation 0x20089E80..0x20091E80 (32768 bytes)
+```
+
+That is the signature of a block being carved out of a free region without the
+stale node being unlinked — the free list still refers to memory the allocator
+has since handed out. `0x200AC930` sits `0xB30` bytes into the block that starts
+at `0x200ABE00`, exactly as a leftover interior node would.
+
+`func_0094FF30` is the title's own allocator, lifted. It works on hardware, so
+this is a translation defect in its unlink or split path rather than a design
+flaw, and the technique that settled the window-copy loop applies directly:
+check the lifted output instruction by instruction against the encodings, with
+attention to carry, rotate masks and branch senses. That is the next concrete
+piece of work, and it is bounded — the function is 211 instructions.
+
 #### It is not a locking race
 
 A free list that holds a live block, damaged in a different place every run,

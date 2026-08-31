@@ -110,6 +110,12 @@ extern "C" int gt5p_alloc_owner(unsigned addr, unsigned* out_ptr, unsigned* out_
 void gt5p_freenode(unsigned node, unsigned size)
 {
     enum { ARENA_LO = 0x20000000u, ARENA_HI = 0x2ADFFF80u };
+    /* Remember the node the walk came from. A bad node is reached by following
+     * a bad `next`, so the PREDECESSOR is where the damage actually is -- the
+     * bad node itself is just whatever live memory that pointer landed in. */
+    static unsigned prev_node, prev_size;
+    unsigned pn = prev_node, ps = prev_size;
+    prev_node = node; prev_size = size;
     if (size <= (ARENA_HI - ARENA_LO)) return;
     static int n = 0;
     if (n++ >= 4) return;
@@ -117,6 +123,17 @@ void gt5p_freenode(unsigned node, unsigned size)
     int owned = gt5p_alloc_owner(node, &op, &ol);
     fprintf(stderr, "[freelist] node=0x%08X size=0x%08X -- larger than the arena\n",
             node, size);
+    {
+        unsigned pp = 0, pl = 0;
+        int pown = gt5p_alloc_owner(pn, &pp, &pl);
+        fprintf(stderr, "[freelist]   reached from node=0x%08X size=0x%08X%s\n",
+
+                pn, ps, pown ? "  (that one is ALSO inside a live block)" : "");
+        if (pown)
+            fprintf(stderr, "[freelist]     predecessor block 0x%08X..0x%08X (%u bytes)\n",
+
+                    pp, pp + pl, pl);
+    }
     if (owned)
         fprintf(stderr, "[freelist]   INSIDE live allocation 0x%08X..0x%08X (%u bytes) -- freed while in use\n",
                 op, op + ol, ol);
