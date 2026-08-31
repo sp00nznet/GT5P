@@ -5,6 +5,8 @@
  * cannot see inside a call that never returns, so count blocks instead and
  * dump the hottest ones once the total says we are clearly looping. */
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <stdint.h>
 
 #define GT5P_BB_MAX 512
@@ -21,7 +23,10 @@ extern "C" void gt5p_bb_hit(unsigned idx, unsigned addr)
     g_bb_addr[idx] = addr;
 
     /* 200M block entries is far past any legitimate decode of a 1 MB stream. */
-    if (++g_bb_total == 200000000ull && !g_bb_dumped) {
+    { static unsigned long long thresh = 0;
+      if (!thresh) { const char* e = getenv("GT5P_BB_AT");
+                     thresh = e ? strtoull(e, 0, 0) : 200000000ull; }
+    if (++g_bb_total == thresh && !g_bb_dumped) {
         g_bb_dumped = 1;
         fprintf(stderr, "[bb] 200M block entries -- hottest blocks:\n");
         for (int round = 0; round < 12; round++) {
@@ -34,7 +39,7 @@ extern "C" void gt5p_bb_hit(unsigned idx, unsigned addr)
             g_bb[best] = 0;
         }
         fflush(stderr);
-    }
+    } }
 }
 
 /* One-shot register dump from inside a hot loop. func_00956D20's window copy

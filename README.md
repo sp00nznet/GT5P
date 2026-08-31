@@ -765,8 +765,29 @@ flow was abandoned:
   control flow is a loop, not a chain of guarded exits.
 
 Anyone continuing should treat the disassembly of this function as unread
-rather than trusting the three readings above, and should get the control flow
-from a block-hit trace (`scripts/bbcount.py`) before forming a hypothesis.
+rather than trusting the three readings above. So rather than leave that as
+advice, here is the trace itself — `scripts/bbcount.py` on `func_006CF080`,
+dumping at 200,000 block entries (`GT5P_BB_AT`):
+
+```
+0x006CF114  23532      0x006CF18C  11762
+0x006CF298  23532      0x006CF210  11762
+0x006CF3E4  23532      0x006CF46C  11762
+0x006CF2AC  23531
+0x006CF3F0  23530
+0x006CF428  23530
+0x006CF4D4  23527
+```
+
+Twelve blocks, two clean tiers: a main loop running ~23,500 iterations in the
+sampled window, and three blocks entered on almost exactly half of them
+(`11762` against `23532`). The blocks previously mislabelled as guarded exits —
+`0x006CF3E4`, `0x006CF3F0`, `0x006CF46C`, `0x006CF4D4` — sit squarely in those
+tiers, which is why instrumenting them as exits produced multiple hits per call.
+
+That is measurement rather than reading, and it is where the next attempt should
+start: a loop of roughly 23,500 iterations with a 50/50 branch inside it, whose
+result is a handle or zero for identical inputs.
 
 That is where the trail stops. The remaining question is what initialises that
 registry and when — an ordinary question about the caller's loop, not
