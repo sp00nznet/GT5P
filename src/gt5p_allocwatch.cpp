@@ -136,7 +136,7 @@ static volatile long g_in_pump;   /* set while func_00013060 runs */
 static volatile long g_in_fsinit; /* set while func_00014B58 runs */
 
 extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
-                                   uint32_t a4, uint32_t /*a5*/)
+                                   uint32_t a4, uint32_t a5_)
 {
     /* func_00687F90 is "task->start(); task->wait();" through vtable slots
      * +0x24 and +0x6C. Main reaches the wait and never leaves it -- nothing is
@@ -202,8 +202,25 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
         /* The submit is: lock; if (state) bail; if (!obj->device) { obj->err =
          * 4; error path } else enqueue(device, obj). So the device pointer at
          * +0x20 decides whether the request is queued at all -- print it. */
-        fprintf(stderr, "[dload] submit obj=0x%08X state=%u device=0x%08X\n",
-                a3_, vm_read32(a3_ + 0x8C), vm_read32(a3_ + 0x20));
+        {
+            /* The worker loop (func_00916F48) checks a stop byte at dev+0x6C
+             * before waiting and exits if it is set. Some PDI threads read as
+             * FINISHED by the time the sixth request lands, so the question is
+             * whether the pool has already shut itself down. */
+            uint32_t dev = vm_read32(a3_ + 0x20);
+            /* The wakeup object is dev+0x4C. Its signal is guarded:
+             *   if (!obj[0x10]) obj[0x11] = 1;   // no waiter: record pending
+             *   else            cond_signal(obj);
+             * so "waiter" and "pending" together say whether the wakeup was
+             * delivered, banked, or dropped. */
+            uint32_t sync = dev + 0x4C;
+            fprintf(stderr, "[dload] submit obj=0x%08X state=%u device=0x%08X "
+                            "stop=%u waiter=%u pending=%u\n",
+                    a3_, vm_read32(a3_ + 0x8C), dev,
+                    dev ? (vm_read32(dev + 0x6C) >> 24) : 0u,
+                    dev ? ((vm_read32(sync + 0x10) >> 24) & 0xFF) : 0u,
+                    dev ? ((vm_read32(sync + 0x10) >> 16) & 0xFF) : 0u);
+        }
 
     if (strstr(who, "0091B638")) {
         static int n = 0;
@@ -378,7 +395,12 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
     if (strstr(who, "006A4400")) {
         static int z = -1;
         if (z < 0) { const char* e = getenv("GT5P_ARENA_ZERO"); z = e ? atoi(e) : 0; }
-        if (z && a4 >= 0x10000u && vm_read32(a3_) == 0)
+        /* Narrow it to the one call whose out-pointer is read back: the
+         * 0x44 header at 0x006C3304. Zeroing every measuring-pass out
+         * blanks slots the caller legitimately uses. z=2 = header only. */
+        uint32_t sz = a5_;
+        if (z && a4 >= 0x10000u && vm_read32(a3_) == 0
+            && (z == 1 || sz == 0x44))
             vm_write32(a4, 0);
     }
 
