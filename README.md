@@ -434,6 +434,35 @@ the print cap removed.
 The measurements that do not depend on this model are unaffected and are listed
 in the next section.
 
+#### Paired by context, the 0x468 is real
+
+The retraction above was right that summing all `measure` lines against all
+`fill` lines compares unrelated work. It was too cautious about the number
+itself. Redoing the measurement properly — every call logged with its arena
+context pointer, no print cap, sequences kept separate and compared per context
+— gives a clean result:
+
+```
+distinct arena contexts: 2
+ctx=0xCFEFF308 DISAGREES
+   measure( 8) [68, 12, 5, 3,   0, 0, 0, 0]
+   fill   (40) [68, 12, 5, 3, 620, 9, 10, 7, 7, 10, 141, 11, 15, 17, 18, ...]
+   totals: measure 88, fill 1216, diff 1128 (0x468)
+contexts that disagree: 1 of 2
+```
+
+**One context out of two, and the difference is exactly `0x468`.** The first
+four reservations agree; then the measuring pass emits four zeros and stops at
+eight calls while the filling pass continues to forty. So the number this
+document has carried for years is not an artefact — it belongs to a single
+arena, `0xCFEFF308`, whose measuring pass enumerates nothing where its filling
+pass enumerates thirty-six items.
+
+The method matters here and is worth stating for whoever repeats it: pair on
+the context pointer, drop the print cap, and compare sequences rather than
+totals. Aggregating across contexts produces the same headline number by
+coincidence and will mislead about everything else.
+
 #### What is directly measured and stands
 
 Independent of any pass model, each of these is a direct observation:

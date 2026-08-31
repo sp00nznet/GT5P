@@ -205,10 +205,9 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
     if (strstr(who, "006A4400")) {
         unsigned base = vm_read32(a3_);
         static int n = 0;
-        if (n++ < 400)
-            fprintf(stderr, "[arena] #%u %s base=0x%08X off=0x%08X size=%u\n",
-                    ++g_probe_tick, base ? "fill   " : "measure", base,
-                    vm_read32(a3_ + 4), a5_);
+        if (1)
+            fprintf(stderr, "[arena] ctx=0x%08X %s off=0x%08X size=%u\n",
+                    a3_, base ? "fill   " : "measure", vm_read32(a3_ + 4), a5_);
         /* The 620-byte reservation is the one the measuring pass sizes at 0.
          * Name the caller that produces it -- that is where the two passes
          * part company. */
