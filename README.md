@@ -242,46 +242,49 @@ megabytes it had never been given, which is latent corruption whether or not it
 is *this* stall. But the stall is still unexplained.
 
 
-##### A Third Outcome: The Allocator Locks A Null Mutex
+##### A Third Outcome, And A Theory That Did Not Survive
 
 Some runs open **no files at all**, and they have a signature of their own:
 
 ```
+[cellSpurs] chain 0x20039780: shutdown after 11 job(s)
 [HOTREAD] spinning on 0x0000000B (=0xFFFFFFFF) guest cia=0x00000000 lr=0x0094FFD4
 ```
 
-`lr` places that inside `func_0094FF30` — the allocator — at its call to
-`func_00938080`, which is a lock-acquire loop:
+38,000 of those spins in one run. `lr` places the guest inside `func_0094FF30`
+— the allocator — at its call to `func_00938080`, a retry loop around the
+import at stub `0x00BE0774`, which is NID `0x1573DC3F`: `sys_lwmutex_lock`.
+`cia=0` says the repeated read is coming from HLE code, not from lifted guest
+code, and the SPURS job chain has already shut down by then.
 
-```
-retry:  li   r4, 0
-        mr   r3, r31              ; the lwmutex
-        bl   <stub 0x00BE0774>    ; NID 0x1573DC3F -- sys_lwmutex_lock
-        cmpwi cr7, r3, 0
-        beq  cr7, .acquired
-        bl   <back-off>
-        b    retry
-```
+The obvious reading is a null lwmutex — address `0x0B` looks exactly like a
+struct at zero plus a field offset, and there is even a purpose-built
+`FLOW_BADLOCK` locator in the runtime for that case. It does not hold up, and
+both reasons are worth writing down:
 
-The address being read, `0x0000000B`, is an lwmutex struct at **null** plus a
-field offset: `r31` is zero. `sys_lwmutex_lock` is resolved and implemented, so
-this is not a missing import — the allocator is being handed a mutex that was
-never created, and the guest loop retries a call that can never succeed.
+- `sys_lwmutex_lock` logs a `FAIL ... -> ESRCH` whenever it is handed a mutex
+  whose sleep-queue slot is unused. **Zero** such lines appear, in any run.
+- `FLOW_BADLOCK` does fire, but its heuristic calls `r3 >= 0x80000000` garbage.
+  This port puts guest stacks at `0xCFExxxxx`, so every stack-allocated mutex
+  trips it. The hits are `r3=0xCFEFF690` and friends — ordinary stack
+  addresses, not bad pointers.
 
-That makes three distinct outcomes from one binary:
+So the lock is being acquired, and something else entirely is reading guest
+address `0x0B` in a loop. What that is remains open; the value `0xFFFFFFFF` and
+the SPURS shutdown immediately before it are the threads to pull. Recorded this
+way rather than as a finding because a confident wrong answer here would cost
+the next session more than an honest gap.
+
+That still leaves three distinct outcomes from one binary:
 
 | assets | what it looks like |
 |---|---|
-| 0 | allocator spins locking a null lwmutex, before any file is opened |
+| 0 | SPURS chain shuts down, then an HLE read-spin on `0x0000000B` |
 | 7 | loads, then the SPURS job chain cycles forever asking for nothing more |
 | 108 | gets furthest; still never submits an RSX command |
 
-All three are timing-dependent, which points at initialisation order rather
-than three separate bugs — an object used before whatever creates its lock has
-run. The null-lwmutex case is the most tractable of the three, because it names
-a specific object and a specific missing step, and it is where the next session
-should start.
-
+All three are timing-dependent, which points at initialisation or teardown
+order rather than three separate bugs.
 
 A measurement note that cost real time here. The runtime turns verbose logging
 on when stderr is redirected, on the reasoning that a redirected stream means
