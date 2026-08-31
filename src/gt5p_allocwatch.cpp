@@ -212,7 +212,10 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
                 pth[k] = (c >= 32 && c < 127) ? c : '.';
             }
             pth[k] = 0;
-            fprintf(stderr, "[dload]   path='%s'\n", pth);
+            fprintf(stderr, "[dload]   path='%s'  +0x90:", pth);
+            for (int q = 0; q < 10; q++)
+                fprintf(stderr, " %08X", vm_read32(a3_ + 0x90 + q * 4));
+            fputc('\n', stderr);
             fflush(stderr);
     }
 
