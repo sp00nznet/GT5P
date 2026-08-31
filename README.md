@@ -816,11 +816,36 @@ the graph. The block-hit counts had been sitting there saying otherwise —
 23,532 entries to something described as a one-shot rejection should have been
 the tell.
 
-The genuine open question is unchanged in substance and much better posed:
+Following that through gives the first coherent account of this function.
+`0x006CF3C4`, the block both "capacity checks" jump to, is a **flush and retry**:
+
+```
+006CF3C4  bl 0x006CEC74        ; flush
+006CF3C8  mr r3, r31
+006CF3CC  bl 0x006CD570        ; wait / kick
+006CF3E0  bc 0x006CF114        ; back into the loop
+006CF3E4  li r27, 16384        ; reset the chunk size to 16 KB
+006CF3EC  b  0x006CF114
+```
+
+So those two comparisons mean *"if the job chain is full, flush it and go
+round again"* — not *"reject the request"*. And the whole function has exactly
+**one** exit, the single `blr` at `0x006CF3C0`, reached by falling out of the
+loop.
+
+Put together with the 16 KB chunk reset and the ~23,500 iterations, this reads
+as a **chunked transfer loop** that pushes an SPU image through the job chain,
+flushing whenever the chain fills. That is a completely different object from
+the "module registration with guarded rejections" this section assumed for
+several rounds.
+
+The open question survives, and only now rests on a correct map:
 `func_006CF080` returns a handle on some calls and zero on others with identical
-arguments, and it is a loop, so the deciding value is loop state. Where the
-return value is actually computed — not where a forward branch happens to point
-— is the thing to find.
+arguments, it has a single exit, and it is a loop — so the returned value is
+whatever the loop leaves in `r3`. Finding where that is assigned is the next
+step, and it should be done by tracing assignments to `r3` inside the body
+rather than by reading branch targets, which is what went wrong three times
+here.
 
 That is where the trail stops. The remaining question is what initialises that
 registry and when — an ordinary question about the caller's loop, not
