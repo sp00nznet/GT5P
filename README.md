@@ -606,9 +606,30 @@ populated alike. Worse for the reading, `0x20039780` is the SPURS job chain
 address that appears throughout these logs — so it is not a descriptor registry
 at all.
 
-So the difference is neither the dispatch index nor that global. Whatever
-`func_006C5C2C` consults to decide it has a descriptor to give, it is something
-this session did not reach.
+So the difference is neither the dispatch index nor that global.
+
+`func_006C5C2C` is a shim onto `func_006C5B60`, which runs a five-call lookup.
+Tracing it gives raw data and no conclusion, recorded here as the starting
+point rather than dressed up as a finding:
+
+```
+[look] func_006CD570(0x20039780, 0x01079C00) -> 0x20039780
+[look] func_006CF50C(0x20039780, 0x01079C00) -> 0x20039780
+[look] func_006CF6A4(0x20039780, 0x00000102) -> 0x20039780
+[look] func_006CF57C(0x20039780, 0x00000102) -> 0x20039780
+[look] func_006CEC74(0x20039780, 0x00000102) -> 0x00000000
+[look] func_006C5B60(0x20039780, 0x01079C00) -> 0x00000000
+```
+
+The chain repeats with what look like group tags in the second argument —
+`0x102`, `0x104`, `0x200`, `0x201`, `0x3100` — and in every sample
+`func_006CEC74` returns **0**, so `func_006C5B60` returns 0 as well.
+
+Two things that are *not* established and should not be assumed: whether those
+zero returns correspond to the empty-descriptor calls (the sampling windows for
+`[look]` and `[enum]` did not overlap in this run), and what `func_006CEC74`
+does. Correlating the two probes on the shared tick, which both already carry,
+is the next run to make.
 
 That is where the trail stops. The remaining question is what initialises that
 registry and when — an ordinary question about the caller's loop, not

@@ -732,6 +732,21 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
 extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
                                 uint32_t a5, uint32_t ret)
 {
+    /* func_006C5B60 is the descriptor lookup: it calls five helpers in
+     * sequence and the scratch buffer either ends up with text or does not.
+     * Log each so an empty call and a populated one can be compared -- the
+     * first helper a populated call reaches that an empty one does not is
+     * where the two part company. Tagged with the shared tick so the [enum]
+     * counts interleave. */
+    if (strstr(who, "006CD570") || strstr(who, "006CF50C") ||
+        strstr(who, "006CF6A4") || strstr(who, "006CF57C") ||
+        strstr(who, "006CEC74") || strstr(who, "006C5B60")) {
+        static int n = 0;
+        if (n++ < 60)
+            fprintf(stderr, "[look] #%u %s(0x%08X, 0x%08X) -> 0x%08X\n",
+                    ++g_probe_tick, who, a3, a4, ret);
+    }
+
     /* The enumerator behind the whole chain. func_006A3D70 walks a collection
      * and returns its length; the arena is sized at length*20. It answers 0
      * when the layout is measured and 31 when it is filled, so the question is
