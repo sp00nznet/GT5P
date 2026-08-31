@@ -546,10 +546,35 @@ func_006C5CF8 yields an empty descriptor on early calls
   -> the loader is never asked for anything: no assets, no frame, no attract mode
 ```
 
-What `func_006C5CF8` waits on is the one thing left to read, and it is an
-ordinary question about a single method rather than anything to do with memory
-corruption, the allocator, the decompressor or the loader — all of which were
-suspected here in turn and each cleared by measurement.
+`func_006C5CF8` turns out to be a **nine-way jump-table dispatch**, one case per
+parameter group:
+
+```
+cmplwi cr7, r5, 8
+bgt    -> default (return without filling)
+lwzx / add / bctr through a 9-entry table at 0x006C5D28
+```
+
+The obvious suspicion — that a case is missing and the method falls through —
+does not hold. Every target is correctly lifted:
+
+```
+case 0  0x006C5D80  START of func_006C5D80
+case 1  0x006C5E3C  START of func_006C5E3C
+...
+case 8  0x006C5D4C  inside func_006C5CF8 (+0x54)
+```
+
+Eight of the nine are function starts *because of the jump-table seeding earlier
+in this session*, and `scripts/jumptables.py` finds the table. So the dispatch
+is sound and the empty descriptors are the game's own index-dependent
+behaviour, not a translation failure.
+
+That is where the trail stops for now. The remaining question is which index the
+early calls pass and why — an ordinary question about the caller's loop, not
+about memory corruption, the allocator, the decompressor, the loader, the SPU
+path, the locks, the renderer or the online layer, every one of which was
+suspected during this work and each cleared by measurement.
 
 #### What is directly measured and stands
 
