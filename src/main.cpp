@@ -86,6 +86,12 @@ void gt5p_start_present_thread(void);     /* src/gt5p_present.cpp */
 /* argv/envp block handed to the guest _start. */
 #define GT5P_ARGV_BASE      0x00F00000u
 
+/* Main thread stack. The runtime hands ppu_thread stacks out of its own
+ * region at 0xD0000000; main is created by us, so it needs one too. 1 MB
+ * matches what lv2 gives a title's primary thread. */
+#define GT5P_MAIN_STACK_BASE 0xCFE00000u
+#define GT5P_MAIN_STACK_SIZE 0x00100000u
+
 static ppu_context g_main_ctx;
 
 /* function_table[] is emitted in ascending address order and
@@ -520,6 +526,34 @@ int main(int argc, char* argv[])
     }
 
     g_main_ctx.gpr[2] = elf.toc;
+
+    /* Give the main thread an actual stack.
+     *
+     * g_main_ctx is zero-initialised and nothing ever set gpr[1], so the guest
+     * started with SP = 0 and its first `stdu r1, -0x90(r1)` wrapped to
+     * 0xFFFFFF70. Main's whole call stack has been living in the last few KB of
+     * the 32-bit address space by accident -- outside the runtime's stack region
+     * (0xD0000000, 256 MB), outside anything deliberately mapped, and reachable
+     * only because the fault handler commits pages on demand.
+     *
+     * It half-works, which is why it survived this long: main can read back what
+     * main wrote. But a worker thread reading an object in one of main's frames
+     * gets a different answer -- the async file layer's request object reads
+     * [obj+0x64] == 4 on main immediately after its constructor and 0 on the
+     * worker, which is what stalls the sixth load. */
+    {
+        const uint32_t stack_size = GT5P_MAIN_STACK_SIZE;
+        const uint32_t stack_base = GT5P_MAIN_STACK_BASE;
+        vm_commit(stack_base, stack_size);
+        memset(vm_base + stack_base, 0, stack_size);
+        /* 16-byte aligned, with room for the caller's frame header, and a NULL
+         * back-chain word so a stack walk terminates instead of wandering. */
+        uint32_t sp = (stack_base + stack_size - 0x200) & ~0xFu;
+        vm_write64(sp, 0);
+        g_main_ctx.gpr[1] = sp;
+        printf("[GT5P] main stack 0x%08X..0x%08X, SP=0x%08X\n",
+               stack_base, stack_base + stack_size, sp);
+    }
     /* argv[0] is not cosmetic here: the filesystem setup strcmps it against
      * "/dev_bdvd/PS3_GAME/USRDIR/EMAIN.SELF" to decide it is looking at its own
      * disc layout. With /app_home it takes a different branch and never opens

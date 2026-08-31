@@ -434,6 +434,14 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
 extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
                                 uint32_t a5, uint32_t ret)
 {
+    /* Read [obj+0x64] the instant the constructor returns. It sets that
+     * field to 4 unconditionally, and the worker later reads 0 with no
+     * store in between that the watch can see -- so establish whether it
+     * is ever actually 4. */
+    if (strstr(who, "0091B8A8"))
+        fprintf(stderr, "[dload] ctor-done obj=0x%08X f64=%u f7C=%u\n",
+                a3, vm_read32(a3 + 0x64), vm_read32(a3 + 0x7C));
+
     /* The pump's first act is: if (func_0096DE30()) return; -- so this
      * one byte decides whether attract mode runs at all. */
     if (strstr(who, "0096DE30"))
