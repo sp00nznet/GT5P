@@ -785,9 +785,42 @@ sampled window, and three blocks entered on almost exactly half of them
 `0x006CF3E4`, `0x006CF3F0`, `0x006CF46C`, `0x006CF4D4` — sit squarely in those
 tiers, which is why instrumenting them as exits produced multiple hits per call.
 
-That is measurement rather than reading, and it is where the next attempt should
-start: a loop of roughly 23,500 iterations with a 50/50 branch inside it, whose
-result is a handle or zero for identical inputs.
+Building a proper control-flow map — every branch target and fall-through,
+annotated with those hit counts — overturns the premise this whole subsection
+was built on:
+
+```
+block        hits     successors
+0x006CF114   23532    -> 0x006CF18C
+0x006CF18C   11762    -> 0x006CF46C
+0x006CF210   11762    (falls through)
+0x006CF298   23532    -> 0x006CF2AC
+0x006CF3C4      -     -> 0x006CF114     <-- BACK EDGE
+0x006CF3E4   23532    -> 0x006CF114     <-- BACK EDGE
+0x006CF3F0   23530    -> 0x006CF18C     <-- BACK EDGE
+0x006CF428   23530    -> 0x006CF18C     <-- BACK EDGE
+0x006CF46C   11762    -> 0x006CF210     <-- BACK EDGE
+0x006CF4D4   23527    -> 0x006CF18C     <-- BACK EDGE
+```
+
+**`0x006CF3C4` is not a failure path.** It branches *backward* to `0x006CF114`,
+and so does every other block in the "tail". `func_006CF080` is a worker **loop**
+spanning `0x006CF114`-`0x006CF4FC`, and the two comparisons at the top that were
+read as capacity rejections are loop-entry conditions.
+
+Every structural claim made about this function earlier in this section was
+therefore inverted from the start: "the failure path at `0x006CF3C4`", "gated on
+arguments `r8`/`r10`", "these blocks are the exits". All three followed from
+reading a forward branch near the end of a listing as an exit, without building
+the graph. The block-hit counts had been sitting there saying otherwise —
+23,532 entries to something described as a one-shot rejection should have been
+the tell.
+
+The genuine open question is unchanged in substance and much better posed:
+`func_006CF080` returns a handle on some calls and zero on others with identical
+arguments, and it is a loop, so the deciding value is loop state. Where the
+return value is actually computed — not where a forward branch happens to point
+— is the thing to find.
 
 That is where the trail stops. The remaining question is what initialises that
 registry and when — an ordinary question about the caller's loop, not
