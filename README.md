@@ -509,6 +509,43 @@ the function being broken. It is not broken. It returns 0 *on the measuring
 pass* and a real count on the filling pass, and that difference is the bug
 rather than the zero itself.
 
+#### Root cause: an audio parameter string, empty when the arena is measured
+
+Printing what the enumerator is actually handed answers it outright. The same
+address, twice:
+
+```
+func_006A3D70(obj=0x20085BE0) -> count=0   str=""
+func_006A3D70(obj=0x20085BE0) -> count=31  str="lfe-send, F:0:100, 0, LFE send level
+                                                from main speaker, %.lfe-level, F:0"
+```
+
+It is a comma-separated **audio mixer parameter descriptor** — which matches
+everything around it: the tokens `func_006A3D14` walks begin `"sgx-"`, and the
+title runs a thread named `sgx-audio-thr`.
+
+So the buffer at `0x20085BE0` is **empty when the arena is measured and holds 31
+parameters when the arena is filled**. Nothing about the allocator, the free
+list, the decompressor or the loader is wrong on its own. The layout is sized
+against a string that has not been written yet, and everything else is
+consequence:
+
+```
+0x20085BE0 empty at measure, 31 tokens at fill
+  -> reservation sized 0 instead of 620   (31 * 20)
+  -> arena short by exactly 0x468
+  -> fill overruns into a free-list node; its end pointer becomes garbage
+  -> free-space query reports 2.6 GB; the giant allocation is granted
+  -> arena bookkeeping destroyed; main spins on 264 bytes forever
+  -> the loader is never asked for anything: no assets, no frame, no attract mode
+```
+
+Every link there was measured. The remaining work is a single question with a
+concrete subject: **what writes the parameter string into `0x20085BE0`, and why
+does it run after the arena is measured rather than before?** A write watch on
+that address names the writer in one run, and the ordering follows from the
+same `[flcheck]`-style bracketing used throughout this section.
+
 #### It is not a locking race
 
 A free list that holds a live block, damaged in a different place every run,

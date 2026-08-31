@@ -731,6 +731,30 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
 extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
                                 uint32_t a5, uint32_t ret)
 {
+    /* The enumerator behind the whole chain. func_006A3D70 walks a collection
+     * and returns its length; the arena is sized at length*20. It answers 0
+     * when the layout is measured and 31 when it is filled, so the question is
+     * what it is walking and why that is empty the first time round. Log the
+     * object it is handed and what it returns, plus the first few next-entry
+     * calls, so the two passes can be compared directly. */
+    if (strstr(who, "006A3D70")) {
+        static int n = 0;
+        if (n++ < 40)
+            { char txt[80]; int k=0;
+              for (; k < 72; k++) { uint32_t w = vm_read32((a3 + k) & ~3u);
+                  unsigned char c = (unsigned char)((w >> (8*(3-((a3+k)&3)))) & 0xFF);
+                  if (!c) break; txt[k] = (c>=32 && c<127) ? (char)c : '.'; }
+              txt[k]=0;
+              fprintf(stderr, "[enum] func_006A3D70(obj=0x%08X) -> count=%u  str=\"%s\"\n",
+                      a3, ret, txt); }
+    }
+    if (strstr(who, "006A3D14")) {
+        static int n = 0;
+        if (n++ < 14)
+            fprintf(stderr, "[enum]   next(obj=0x%08X buf=0x%08X) -> 0x%08X  [obj+0]=0x%08X\n",
+                    a3, a4, ret, vm_read32(a3));
+    }
+
     if (strstr(who, "006A4400") || strstr(who, "006C2D5C")) {
         extern int gt5p_freelist_bad(unsigned);
         int after = gt5p_freelist_bad(0x011806B0u);
