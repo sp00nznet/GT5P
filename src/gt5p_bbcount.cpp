@@ -62,3 +62,21 @@ extern "C" void gt5p_bb_regs(unsigned long long r25, unsigned long long r26,
             r29, (long long)(r29 - r25));
     fflush(stderr);
 }
+
+/* Sampled at the window-copy setup, immediately before the loop is entered.
+ * The loop samples show a sane bound for a million iterations and then a zero
+ * one, which leaves two possibilities: either the setup itself ever runs with
+ * a zero bound (bad input), or it never does and something inside the loop
+ * clobbers the callee-saved registers (bad call). This tells them apart. */
+extern "C" void gt5p_bb_setup(unsigned long long r25, unsigned long long r26,
+                              unsigned long long r28, unsigned long long r31,
+                              unsigned long long r24)
+{
+    static unsigned n;
+    if (n++ >= 12) return;
+    fprintf(stderr, "[setup] #%u base=0x%llX bound=0x%llX(+%lld) wrap=0x%llX(+%lld) "
+                    "cursor=0x%llX(+%lld) r24=%llu\n",
+            n, r25, r26, (long long)(r26 - r25), r28, (long long)(r28 - r25),
+            r31, (long long)(r31 - r25), r24);
+    fflush(stderr);
+}
