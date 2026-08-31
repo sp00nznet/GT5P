@@ -540,11 +540,32 @@ consequence:
   -> the loader is never asked for anything: no assets, no frame, no attract mode
 ```
 
-Every link there was measured. The remaining work is a single question with a
-concrete subject: **what writes the parameter string into `0x20085BE0`, and why
-does it run after the arena is measured rather than before?** A write watch on
-that address names the writer in one run, and the ordering follows from the
-same `[flcheck]`-style bracketing used throughout this section.
+One qualification, because the tempting version of this is stronger than the
+evidence. `0x20085BE0` is a **reused scratch buffer**, not one collection's
+home: across runs the enumerator returns 0, 4, 8, 16 and 31 for that same
+address, and a write watch over its first 16 bytes catches only zero-fill. So
+"empty at measure, 31 at fill" describes one observed pair rather than the
+lifecycle of a single object, and the audio descriptor is what happened to be
+in the buffer at the moment it was sampled.
+
+What is solid, and reproducible on demand, is the pass comparison itself:
+
+```
+measure: 16 calls, total   164 bytes (0xA4)
+fill   : 48 calls, total  1292 bytes (0x50C)
+difference:              1128 bytes (0x468)
+first size mismatch at call 12: measure size=0, fill size=620
+```
+
+The measuring pass walks a *shorter sequence* than the filling pass — 16 calls
+against 48 — which is a stronger statement than any single count: the two
+passes are not disagreeing about one item's size, they are enumerating
+different amounts of work. Call 12 is simply where they first diverge.
+
+So the question to hand on is: **why does the measuring pass make 16
+reservations where the filling pass makes 48?** That is answerable by logging
+both sequences with their callers, which the `[arena]` probe already does — it
+just needs the caller recorded alongside each entry.
 
 #### It is not a locking race
 
