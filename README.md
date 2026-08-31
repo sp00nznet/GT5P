@@ -214,6 +214,32 @@ free, or a free-list insertion that keeps a node it should have unlinked. The
 size the allocator then reports is whatever the live data happens to look like,
 which is why it differs every run and why the asset count is a spread.
 
+#### The corrupt nodes sit in the decompressor's buffers
+
+Recording every block the allocator hands out, then asking which live block
+contains a bad node, identifies them exactly:
+
+```
+node=0x200AC930  INSIDE live allocation 0x200ABE00..0x200B943A (54842 bytes)
+node=0x2008A06D  INSIDE live allocation 0x20089E80..0x20091E80 (32768 bytes)
+```
+
+Those two sizes are not anonymous. **54,842 bytes is the exact size of
+`PDIPFS/5C/B2`**, the first real asset this port ever managed to read — the
+buffer the compressed file is read into. **32,768 is exactly the LZ window**,
+the `r25 + 0x8000` circular buffer from the `longjmp` investigation above.
+
+So the free list ends up pointing into the two buffers the decompression path
+owns, and the "sizes" it then reports are whatever those buffers happen to
+contain: a pointer (`0x42C80000`), the ASCII `"leve"`. That is why the reported
+free space is enormous and different every run.
+
+This is the same code path that produced the runaway window copy. Fixing
+`longjmp` stopped that loop from writing 4 MB past the window, but something on
+this path still ends with free-list links inside live buffers — either a
+remaining out-of-bounds write, or these buffers being released while the
+decompressor still holds them.
+
 #### It is not a locking race
 
 A free list that holds a live block, damaged in a different place every run,

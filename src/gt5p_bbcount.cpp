@@ -106,14 +106,55 @@ void gt5p_layout(unsigned long long capacity, unsigned long long used)
  * asks for that much. Report the first such node: its ADDRESS is what a write
  * watch needs to catch whoever trampled it. */
 /* C++ linkage to match the block-scope declaration at the call site. */
+extern "C" int gt5p_alloc_owner(unsigned addr, unsigned* out_ptr, unsigned* out_len);
 void gt5p_freenode(unsigned node, unsigned size)
 {
     enum { ARENA_LO = 0x20000000u, ARENA_HI = 0x2ADFFF80u };
     if (size <= (ARENA_HI - ARENA_LO)) return;
     static int n = 0;
     if (n++ >= 4) return;
-    fprintf(stderr, "[freelist] node=0x%08X size=0x%08X (%u) -- larger than the arena\n"
-                    "[freelist]   watch it with LBP_WW=0x%08X\n",
-            node, size, size, node + 4);
+    unsigned op = 0, ol = 0;
+    int owned = gt5p_alloc_owner(node, &op, &ol);
+    fprintf(stderr, "[freelist] node=0x%08X size=0x%08X -- larger than the arena\n",
+            node, size);
+    if (owned)
+        fprintf(stderr, "[freelist]   INSIDE live allocation 0x%08X..0x%08X (%u bytes) -- freed while in use\n",
+                op, op + ol, ol);
+    else
+        fprintf(stderr, "[freelist]   not inside any recorded allocation\n");
     fflush(stderr);
+}
+
+/* Cross-reference: is a corrupt free-list node sitting inside a block the
+ * allocator has handed out and not taken back?
+ *
+ * The write watch already showed that a "free" node is live memory, but not
+ * WHICH allocation owns it. Recording every block the allocator returns and
+ * then asking, at the moment the walk trips over a bad node, which live block
+ * contains it turns "a block is free and allocated at once" into a specific
+ * (address, size) pair -- which is what an instrumented free path needs to
+ * match against. */
+enum { GT5P_ALLOC_MAX = 4096 };
+static unsigned g_alloc_ptr[GT5P_ALLOC_MAX];
+static unsigned g_alloc_len[GT5P_ALLOC_MAX];
+static unsigned g_alloc_n;
+
+extern "C" void gt5p_alloc_record(unsigned ptr, unsigned len)
+{
+    if (g_alloc_n < GT5P_ALLOC_MAX) {
+        g_alloc_ptr[g_alloc_n] = ptr;
+        g_alloc_len[g_alloc_n] = len;
+        g_alloc_n++;
+    }
+}
+
+extern "C" int gt5p_alloc_owner(unsigned addr, unsigned* out_ptr, unsigned* out_len)
+{
+    for (unsigned i = 0; i < g_alloc_n; i++)
+        if (addr >= g_alloc_ptr[i] && addr < g_alloc_ptr[i] + g_alloc_len[i]) {
+            *out_ptr = g_alloc_ptr[i];
+            *out_len = g_alloc_len[i];
+            return 1;
+        }
+    return 0;
 }

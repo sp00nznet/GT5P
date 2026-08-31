@@ -693,6 +693,8 @@ extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
      * and dump the guest call stack for an obviously garbage size so the caller
      * is named rather than guessed at. */
     if (strstr(who, "0094FF30") && ret) {
+        { extern void gt5p_alloc_record(unsigned, unsigned);
+          gt5p_alloc_record(ret, a4); }
         static int big = 0;
         if (a4 > (1u << 20) && big++ < 14) {
             int outside = (ret < 0x20000000u || ret >= 0x2ADFFF80u);
