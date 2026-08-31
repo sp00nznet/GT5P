@@ -562,10 +562,29 @@ against 48 — which is a stronger statement than any single count: the two
 passes are not disagreeing about one item's size, they are enumerating
 different amounts of work. Call 12 is simply where they first diverge.
 
-So the question to hand on is: **why does the measuring pass make 16
-reservations where the filling pass makes 48?** That is answerable by logging
-both sequences with their callers, which the `[arena]` probe already does — it
-just needs the caller recorded alongside each entry.
+Printing both sequences in full says it plainly:
+
+```
+measure (16): [68, 0, 5, 3, 0, 0, 0, 0, 68, 12, 5, 3,   0, 0, 0, 0]
+fill    (48): [68, 0, 5, 3, 0, 0, 0, 0, 68, 12, 5, 3, 620, 9, 10, 7, 7, 10, 141, 11, 15, ...]
+```
+
+The first **twelve reservations are byte-identical**. Then the measuring pass
+emits four zeros and stops, while the filling pass emits thirty-six real
+entries. So the layout has a fixed prefix both passes agree on, followed by a
+variable list that is **empty when measured and holds thirty-six items when
+filled** — and `620 = 31 * 20` is simply the first of them.
+
+That is as far as this goes without new work, and it is a good place to stop
+because the question is now sharp and small:
+
+> **What populates that list, and why does it run between the measuring pass
+> and the filling pass rather than before both?**
+
+The `[arena]` probe prints the sequences; adding the guest caller to each entry
+identifies the code that walks the list, and a write watch on the list head
+identifies what fills it. Both techniques are already used elsewhere in this
+section and take one run each.
 
 #### It is not a locking race
 
