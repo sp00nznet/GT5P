@@ -196,6 +196,26 @@ static int g_fl_before;   /* free-list state entering a bracketed call */
 extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
                                    uint32_t a4, uint32_t a5_)
 {
+    /* GT5P_ARENA_OUTZERO=1 -- candidate fix.
+     *
+     * func_006A4400 skips writing *out when the arena base is still 0, which
+     * is exactly the measuring pass. The caller then reads that slot anyway
+     * and branches on it, so on this port it branches on whatever the stack
+     * happened to hold while on hardware it saw something stable -- and the
+     * measure and fill passes end up disagreeing by 0x468 bytes. The fill pass
+     * then bumps past the region that was reserved for it and writes over
+     * heap memory that is still on the free list.
+     *
+     * Writing 0 into the slot on that path makes the measuring pass see a
+     * definite value instead of stack litter. If the two passes then agree,
+     * the arena stops overrunning. */
+    if (strstr(who, "006A4400")) {
+        static int on = -1;
+        if (on < 0) { const char* e = getenv("GT5P_ARENA_OUTZERO"); on = e ? atoi(e) : 0; }
+        if (on && a4 && vm_read32(a3_) == 0)
+            vm_write32(a4, 0);
+    }
+
     /* Bracket the suspects: if the free list is intact on entry and broken on
      * exit, the function between the two checks is the one that broke it. */
     if (strstr(who, "006A4400") || strstr(who, "006C2D5C")) {
@@ -696,8 +716,9 @@ extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
         int after = gt5p_freelist_bad(0x011806B0u);
         static int n = 0;
         if (after != g_fl_before && n++ < 8)
-            fprintf(stderr, "[flcheck] %s: free-list bad-chains %d -> %d\n",
-                    who, g_fl_before, after);
+            fprintf(stderr, "[flcheck] %s(ctx=0x%08X out=0x%08X size=%u) bad-chains %d -> %d  ctx:[base=0x%08X off=0x%08X]\n",
+                    who, a3, a4, a5, g_fl_before, after,
+                    vm_read32(a3), vm_read32(a3 + 4));
     }
 
     /* func_0094FF30 is the game's allocator, (heap, size, align) -> block.

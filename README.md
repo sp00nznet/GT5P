@@ -358,6 +358,52 @@ function this document already describes in detail. That is where the next
 session should start, and unlike everything else tried here it is a *fix*
 rather than another measurement.
 
+#### A fix was tried and rejected
+
+`func_006A4400` itself is correctly lifted — `scripts/audit_cmp.py` and
+`scripts/audit_branch.py` both pass on it, and its two branches decode exactly
+as the C reads. It is a bump allocator with **no bounds check**:
+
+```
+func_006A4400(ctx, out, size):
+    if ([ctx] != 0 && out != 0):
+        *out = [ctx] + [ctx+4]
+        memset(*out, 0, size)
+    [ctx+4] += size
+```
+
+Catching the call that breaks the list shows the shape of the damage:
+
+```
+[flcheck] func_006A4400(ctx=0xCFEFF308 out=0xCFEFF2FC size=620)
+          bad-chains 0 -> 1   ctx:[base=0x20089DA0 off=0x2C4]
+```
+
+`out` is a stack slot, so `*out` is not what corrupts anything. The arena's
+**base is `0x20089DA0`, and the highest free-list bucket head is `0x20089F20`**
+— `base + 0x180`. The bump region overlaps memory that is still on the free
+list, and the offset is already at `0x2C4`, well past it. The `memset` walks
+over free-list nodes.
+
+That is the `0x468`-byte measure/fill discrepancy showing up as a symptom at
+last: the fill pass writes more than the measure pass reserved.
+
+The obvious fix was tried. On the measuring pass the arena base is still 0, so
+the write to `*out` is skipped and the caller reads an uninitialised slot —
+which is the mechanism this document guessed at long ago.
+`GT5P_ARENA_OUTZERO=1` writes a definite 0 into that slot on the skip path so
+the measuring pass sees a stable value. It does not work:
+
+```
+control                7  108  108  108  7      (3 of 5 reach 108)
+GT5P_ARENA_OUTZERO=1   7    7  108    7  7      (1 of 5)
+```
+
+Measurably worse, so it is off by default and kept only as a documented dead
+end. Whatever the measuring pass is actually reading, zero is not the value
+hardware gives it — or the disagreement is somewhere else entirely and the
+uninitialised read is a red herring.
+
 #### It is not a locking race
 
 A free list that holds a live block, damaged in a different place every run,
