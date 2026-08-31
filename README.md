@@ -215,6 +215,35 @@ transfers for the same reason, so this joins them
 still reads its inputs from the wrong place — it also issues GETs from EAs like
 `0x7801C102` — but the histogram is now readable, which it was not before.
 
+### The Write Watch Was Lying by Omission
+
+`LBP_WW` prints its first 64 hits and then goes silent without saying so. I read
+that silence as *"nothing writes this field"* four separate times in one
+session — the heap bump pointer at `0x011806BC`, the Job Manager queue id at
+`0x0118C500`, and both the `f64` and state fields of the stalled file request.
+The state field had **2,340 writes** in the watched window. Sixty-four were
+shown. Each time, the wrong conclusion sent the investigation somewhere else for
+a while.
+
+Fixed in [ps3recomp#111](https://github.com/sp00nznet/ps3recomp/pull/111): the
+watch now announces the cap and `LBP_WW_MAX` raises it (`0` = unlimited).
+
+Uncapped, the stalled request's state machine reads straight off:
+
+```
+<- 0   func_00916730
+<- 1   func_00918310    enqueue: queued on the list at dev+40
+<- 0   func_00917DE8
+<- 2   func_009167E0    promoted to a second, priority-sorted list at dev+64,
+                        worker signalled again
+       (nothing further -- the wait needs 3)
+```
+
+So the request is neither ignored nor lost: it is promoted through two queues
+and parks in the second. `func_009167E0` walks that list sorted on the
+`[req+0xD8]`/`[req+0xDC]` key pair, inserts, and signals `dev+76` — the same
+object the worker waits on. Whatever drains `dev+64` is the next thing to find.
+
 ### Why the Two Arena Passes Disagree
 
 The caller is a textbook measure / allocate / fill, and it checks its own work:
