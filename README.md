@@ -242,6 +242,47 @@ megabytes it had never been given, which is latent corruption whether or not it
 is *this* stall. But the stall is still unexplained.
 
 
+##### A Third Outcome: The Allocator Locks A Null Mutex
+
+Some runs open **no files at all**, and they have a signature of their own:
+
+```
+[HOTREAD] spinning on 0x0000000B (=0xFFFFFFFF) guest cia=0x00000000 lr=0x0094FFD4
+```
+
+`lr` places that inside `func_0094FF30` — the allocator — at its call to
+`func_00938080`, which is a lock-acquire loop:
+
+```
+retry:  li   r4, 0
+        mr   r3, r31              ; the lwmutex
+        bl   <stub 0x00BE0774>    ; NID 0x1573DC3F -- sys_lwmutex_lock
+        cmpwi cr7, r3, 0
+        beq  cr7, .acquired
+        bl   <back-off>
+        b    retry
+```
+
+The address being read, `0x0000000B`, is an lwmutex struct at **null** plus a
+field offset: `r31` is zero. `sys_lwmutex_lock` is resolved and implemented, so
+this is not a missing import — the allocator is being handed a mutex that was
+never created, and the guest loop retries a call that can never succeed.
+
+That makes three distinct outcomes from one binary:
+
+| assets | what it looks like |
+|---|---|
+| 0 | allocator spins locking a null lwmutex, before any file is opened |
+| 7 | loads, then the SPURS job chain cycles forever asking for nothing more |
+| 108 | gets furthest; still never submits an RSX command |
+
+All three are timing-dependent, which points at initialisation order rather
+than three separate bugs — an object used before whatever creates its lock has
+run. The null-lwmutex case is the most tractable of the three, because it names
+a specific object and a specific missing step, and it is where the next session
+should start.
+
+
 A measurement note that cost real time here. The runtime turns verbose logging
 on when stderr is redirected, on the reasoning that a redirected stream means
 someone is capturing a log — and `runtime/ps3_log.h` warns in as many words
