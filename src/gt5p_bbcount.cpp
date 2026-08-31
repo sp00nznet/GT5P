@@ -219,6 +219,8 @@ extern "C" int gt5p_freelist_bad(unsigned heap)
  * thirteen counts come back empty, so either a different method is being
  * dispatched for those objects or the same one is doing nothing. Print the
  * resolved target and the object so the two groups can be told apart. */
+/* `obj` carries the dispatch index r5: func_006C5CF8 switches on it and
+ * returns without filling when it exceeds 8. */
 void gt5p_descr(unsigned target, unsigned obj)
 {
     static unsigned n;

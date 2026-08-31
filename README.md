@@ -570,8 +570,34 @@ in this session*, and `scripts/jumptables.py` finds the table. So the dispatch
 is sound and the empty descriptors are the game's own index-dependent
 behaviour, not a translation failure.
 
-That is where the trail stops for now. The remaining question is which index the
-early calls pass and why — an ordinary question about the caller's loop, not
+Logging the dispatch index rules that out too. The early empty calls and the
+later populated ones use **the same indices**:
+
+```
+#5  index=7 -> count=0   ""
+#6  index=8 -> count=0   ""
+...
+#14 index=8 -> count=8   "mix0, F:-100:100, 0, Channel 0 blend, %..."
+#15 index=7 -> count=8   "ch0, F:0:400, 100, Channel 0 level, %..."
+```
+
+Same method, same index, empty early and populated later. So it is state, not
+selection. Case 8 of the switch is `0x006C5D4C`, and what it reads is a global:
+
+```
+lwz r9, -27716(r2)
+lwz r3, 6276(r9)        ; a global registry pointer
+bl  0x006C5C2C          ; fetch the descriptor through it
+```
+
+That is the fact. The implication — that the registry at `[[r2-27716]+6276]` is
+not populated when the earliest reservations are measured, and is by the time
+they are filled — is a **hypothesis this session did not verify**, and given how
+many readings needed correcting here it should be checked before being built on.
+Logging that pointer's value at the two call sites settles it in one run.
+
+That is where the trail stops. The remaining question is what initialises that
+registry and when — an ordinary question about the caller's loop, not
 about memory corruption, the allocator, the decompressor, the loader, the SPU
 path, the locks, the renderer or the online layer, every one of which was
 suspected during this work and each cleared by measurement.
