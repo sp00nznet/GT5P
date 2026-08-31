@@ -144,6 +144,43 @@ submits an RSX command buffer, so the FIFO drain has nothing to do and no frame
 is ever presented. The frame loop is the next wall, and it sits behind whatever
 makes the loader stop asking for assets.
 
+#### The Stuck Runs Ask lv2 For More Memory
+
+The two outcomes differ in one visible way before they diverge. Stuck runs
+issue lv2 syscalls **341** and **342**; the run that reaches 108 files never
+does. Both are unimplemented here, and `ppu_loader.cpp`'s catch-all answers
+`CELL_OK`.
+
+The wrappers are `func_00941808` (341) and `func_00941910` (342), and 341's is
+a retry loop:
+
+```
+loop:  mr   r3, r29        ; a pointer the kernel is expected to write
+       mr   r4, r31        ; 0x300000 -- three megabytes
+       li   r11, 341
+       sc
+       cmpwi cr4, r3, 0
+       bne  cr4, .retry    ; anything but 0 -> back-off call, then try again
+       ...success...
+```
+
+So `CELL_OK` is taken as success and the title proceeds on three megabytes it
+was never given. The obvious next thought — report failure instead, and let it
+take a fallback path — is wrong, and measurably so: the branch retries on any
+non-zero result, so an error answer spins that loop forever.
+
+```
+stub answers CELL_OK      7, 7, 0, 7   files
+stub answers ENOMEM       1, 1, 1, 1   files
+```
+
+`GT5P_SC_FAIL=<numbers>` in the runtime makes named syscalls report failure, so
+that experiment is repeatable rather than a one-off patch. The conclusion is
+that these have to be *implemented*, not merely answered — but they are a
+symptom rather than the cause, since the runs that get furthest never call them
+at all. Something makes the stuck runs need memory the good ones do not.
+
+
 A measurement note that cost real time here. The runtime turns verbose logging
 on when stderr is redirected, on the reasoning that a redirected stream means
 someone is capturing a log — and `runtime/ps3_log.h` warns in as many words
