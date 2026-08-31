@@ -207,6 +207,13 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
         if (n++ < 400)
             fprintf(stderr, "[arena] %s base=0x%08X off=0x%08X size=%u\n",
                     base ? "fill   " : "measure", base, vm_read32(a3_ + 4), a5_);
+        /* The 620-byte reservation is the one the measuring pass sizes at 0.
+         * Name the caller that produces it -- that is where the two passes
+         * part company. */
+        if (a5_ == 620 && vm_read32(a3_)) {
+            static int once = 0;
+            if (!once++) ppu_guest_callstack("arena-620");
+        }
     }
 
     /* GT5P_ARENA_OUTZERO=1 -- candidate fix.

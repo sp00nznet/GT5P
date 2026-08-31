@@ -437,6 +437,37 @@ What the measuring pass should see in that slot is now the whole question, and
 it is a narrow one: find which caller produces call 12 and what it derives 620
 from. The callers are `func_006C0218`, `func_006C0620` and `func_006C19E0`.
 
+#### Where call 12 comes from
+
+The guest chain for the 620-byte reservation:
+
+```
+func_00011A28 -> func_00013D10 -> func_00013EF0 -> func_00698B58 -> func_00683B90
+  -> func_006A4E14 -> func_006C5E90 -> func_006C5E60 -> func_006C36E4
+  -> func_006C32A0 -> func_006C2D5C -> [...] -> func_006A4400
+```
+
+Two caveats on that chain, both worth stating. It is a *host* backtrace mapped
+back to guest functions, and one frame is plainly wrong — `func_006C2CC8+0x7F7`
+names a function only `0x94` bytes long, and reading it confirms it never calls
+the arena builder at all. The reliable way to resolve it is to intersect the
+chain with the arena builder's actual callers, which is exact:
+
+```
+callers of func_006A4400 that appear in the chain:
+  func_006C2D5C, func_006C32A0
+```
+
+`func_006C2D5C` is the one to look at first, because it is also the function the
+write watch caught putting float data (`0xC2C0A3D7`, about -96.3) into the
+free-list node's `next` field. It both reserves the arena space and writes
+through it — so the under-measured reservation and the overrun that follows are
+the same function's two halves.
+
+That is the whole handoff: **find why `func_006C2D5C` sizes this reservation at
+0 on the measuring pass and 620 on the filling pass.** Everything upstream and
+downstream of that question is measured and written down.
+
 #### It is not a locking race
 
 A free list that holds a live block, damaged in a different place every run,
