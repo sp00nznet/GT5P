@@ -292,6 +292,14 @@ a race now decides which you get.
 | 7-25 | loads, then the SPURS job chain cycles forever asking for nothing more |
 | 108 | gets furthest; still never submits an RSX command |
 
+The thread doing the loading is now named: every `cellFs` open in a boot comes
+from the thread whose entry is `0x01029EC8`, the **Job Manager Event Handler**.
+In a stalled run that thread is not blocked and not dead — it cycles forever on
+`sys_event_queue_receive(q=1)`, taking job-chain completions (`d1=0x20039780`,
+`d2` walking 0, 2, 4, 6, 8, 0xA, 0xC) and never asking for another asset. So the
+loader is healthy and idle; whatever decides *what* to load next is what has
+stopped.
+
 Nothing is *polling* in the stalled runs — `YDKJ_HOTMAP` records no hot address
 at all, and the thread dump shows every PDI worker parked in a condition wait.
 That rules out a spin-wait on a flag nobody sets, and means the stall is a
