@@ -581,6 +581,27 @@ because the question is now sharp and small:
 > **What populates that list, and why does it run between the measuring pass
 > and the filling pass rather than before both?**
 
+Part of that is already answered, and it narrows things usefully. The
+descriptors are **static read-only data in the ELF**, at `0x00F1B9F0`:
+
+```
+lfe-send, F:0:100, 0, LFE send level from main speaker, %
+lfe-level, F:0:100, 100, LFE level, %
+lfe-lp, B, 1, Is use low pass filter
+lfe-fc, I:70:250, 120, LFE Lo pass filter frequency, Hz
+dmix-mode, L:MONO:S...
+```
+
+So nothing *builds* this list at runtime — it is a constant table compiled into
+the binary. But the enumerator is handed `0x20085BE0`, a heap scratch buffer,
+not the ELF address. Something copies descriptor text into scratch and the
+enumerator counts the copy.
+
+That reframes the question a second time, and more helpfully: it is not "what
+populates the list" — the list is a constant. It is **why the copy into scratch
+does not happen on the measuring pass**. The data is always there; only the
+transfer is conditional.
+
 The `[arena]` probe prints the sequences; adding the guest caller to each entry
 identifies the code that walks the list, and a write watch on the list head
 identifies what fills it. Both techniques are already used elsewhere in this
