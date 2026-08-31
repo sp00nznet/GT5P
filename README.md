@@ -300,6 +300,17 @@ In a stalled run that thread is not blocked and not dead — it cycles forever o
 loader is healthy and idle; whatever decides *what* to load next is what has
 stopped.
 
+The furthest runs reach an online layer — nine unresolved `cellHttp` NIDs plus
+one `sceNp2`, which fits the `GrimURL` entry in the config table. That looked
+promising: an HTTP init faked to `CELL_OK` and then waited on would stall
+exactly like this. It is not that. `PS3_HLE_UNRESOLVED=fail` exists to A/B which
+missing import is load-bearing, and it changes nothing — `7 7 7 7` against a
+default of `7 7 7 25`. Whatever stops the boot, it is not a faked import being
+believed.
+
+`cellPad Init(max_connect=7)` is called exactly once and never polled again, so
+the title never reaches an input loop either.
+
 Nothing is *polling* in the stalled runs — `YDKJ_HOTMAP` records no hot address
 at all, and the thread dump shows every PDI worker parked in a condition wait.
 That rules out a spin-wait on a flag nobody sets, and means the stall is a
