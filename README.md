@@ -215,6 +215,42 @@ transfers for the same reason, so this joins them
 still reads its inputs from the wrong place — it also issues GETs from EAs like
 `0x7801C102` — but the histogram is now readable, which it was not before.
 
+### Why the Two Arena Passes Disagree
+
+The caller is a textbook measure / allocate / fill, and it checks its own work:
+
+```
+r3 = 0;         bl func_006C32A0     ; measure -> r30
+bl func_006A3988(r30)                ; allocate r30 bytes
+r3 = buffer;    bl func_006C32A0     ; fill
+cmpw r3, r30;   beq ok               ; the two totals must agree
+```
+
+Inside, the measuring pass reads back a pointer it never wrote:
+
+```
+bl func_006A4400(arena, r1+112, 0x44)   ; base == 0 -> does NOT write *out
+r4 = [r1+0x70]                          ; reads that slot anyway
+...
+r11 = [r1+0x70];  cmpdi r9, 0           ; and BRANCHES on it
+```
+
+`func_006A4400` only writes `*out` when `arena->base` is non-zero, so on the
+measuring pass that stack slot holds whatever was there before. Forcing it to
+zero makes the two passes agree:
+
+| | measure | fill | overrun |
+|---|---|---|---|
+| `GT5P_ARENA_ZERO=0` | `0x58` | `0x4C0` | **0x468 bytes** |
+| `GT5P_ARENA_ZERO=1` | `0x11C` | `0x114` | none |
+
+So that stale read is what drives the mismatch. **The experiment is not a fix**,
+though: blanking every measuring-pass out-pointer also blanks slots the caller
+legitimately uses, and it trades the corruption for crashes — four runs each,
+`ARENA_ZERO=0` gives 0 crashes and 4 allocator spins, `ARENA_ZERO=1` gives 3
+crashes and 1 spin. It is off by default. What it establishes is the mechanism,
+which is worth more than the workaround would have been.
+
 ### The Next Wall: a Heap That Grew Out of Its Own Region
 
 The boot now ends in `operator new` retrying forever:

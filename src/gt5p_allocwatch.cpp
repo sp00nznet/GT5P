@@ -53,6 +53,7 @@ int watch_level()
  * this one runs on the allocating thread, so "it was still right at call #N and
  * wrong at #N+1" is exact. */
 extern "C" uint32_t vm_read32(uint64_t addr);
+extern "C" void vm_write32(uint64_t addr, uint32_t val);
 extern "C" void ppu_guest_callstack(const char* tag);
 extern "C" void ppu_guard_page(uint32_t guest_ea);
 
@@ -362,6 +363,24 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
      * fires before the callee, so it also survives a call that never returns. */
     if (watch_level() >= 3)
         fprintf(stderr, "[call] %s(r3=0x%08X r4=0x%08X)\n", who, a3_, a4);
+
+    /* GT5P_ARENA_ZERO=1 -- experiment.
+     *
+     * func_006C32A0 calls the arena for a 0x44 header, then reads the out
+     * pointer back from that same stack slot and BRANCHES on it. In the
+     * measuring pass (arena->base == 0) the arena deliberately does not write
+     * *out, so the caller is branching on whatever the stack happened to hold.
+     * On hardware that reads zero; here the guest stack is dirty, the two
+     * passes take different branches, and they disagree by 0x468 bytes --
+     * which the game itself notices (cmpw r3, r30 at 0x006C37CC) and treats as
+     * an error. Writing 0 through on the measuring pass makes the slot
+     * deterministic; if the two passes then agree, this is the cause. */
+    if (strstr(who, "006A4400")) {
+        static int z = -1;
+        if (z < 0) { const char* e = getenv("GT5P_ARENA_ZERO"); z = e ? atoi(e) : 0; }
+        if (z && a4 >= 0x10000u && vm_read32(a3_) == 0)
+            vm_write32(a4, 0);
+    }
 
     static int pad = -1;
     if (pad < 0) { const char* e = getenv("GT5P_HEAPPAD"); pad = e ? atoi(e) : 0; }
