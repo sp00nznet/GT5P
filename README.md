@@ -701,10 +701,28 @@ That also qualifies the section above. The sizes reaching `func_006CF080`
 "these registration calls" was never established — the module *names* are solid,
 the claim that `socedmix` specifically is the one failing is not.
 
-What is left, and it is a good question to inherit: `func_006CF080` accepts and
-rejects identical requests depending on state. Finding which state means
-reading its 291 instructions for the branch that reaches the failure path at
-`0x006CF3C4` other than the two capacity checks, then logging that condition.
+Mapping every branch into the tail settles where the zero comes from. The
+failure path at `0x006CF3C4` is reached by **exactly two** branches — and both
+are the capacity checks that were just measured as untripped. So the zero return
+comes from one of the other exits, and those are gated on arguments the probe
+never captured:
+
+```
+0x006CF148  branch if r8  <= 0      -> 0x006CF3F0
+0x006CF160  branch if r0  <  0      -> 0x006CF3F0
+0x006CF1A0  branch if r10 <= 0      -> 0x006CF46C
+0x006CF1B8  branch if r0  <  0      -> 0x006CF46C
+0x006CF188  branch if r0 == r11     -> 0x006CF4A8
+```
+
+`gt5p_alloc_pre` only forwards `r3`-`r5`, which is why identical `(image, size)`
+pairs looked indistinguishable while producing different results — the deciding
+values are in `r6`-`r10` and were never logged.
+
+So the next step is mechanical rather than speculative: widen the instrumentation
+wrapper for this one function to carry `r6`-`r10`, run once, and compare an
+accepted call against a rejected one. The branch that differs is the answer, and
+the five candidates above are the entire search space.
 
 That is where the trail stops. The remaining question is what initialises that
 registry and when — an ordinary question about the caller's loop, not
