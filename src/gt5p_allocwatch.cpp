@@ -240,6 +240,22 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
              * so "waiter" and "pending" together say whether the wakeup was
              * delivered, banked, or dropped. */
             uint32_t sync = dev + 0x4C;
+            /* Name the device class and its worker methods. The request is
+             * promoted into a second list at dev+0x40 and parks there, so the
+             * consumer of THAT list is what matters now. */
+            {
+                static int _dv = 0;
+                if (_dv++ < 2 && dev) {
+                    uint32_t dvt = vm_read32(dev);
+                    fprintf(stderr, "[dev] dev=0x%08X vtable=0x%08X "
+                                    "run=func_%08X step=func_%08X "
+                                    "list28=0x%08X list40=0x%08X\n",
+                            dev, dvt,
+                            vm_read32(vm_read32(dvt + 0x38)),
+                            vm_read32(vm_read32(dvt + 0x3C)),
+                            vm_read32(dev + 0x28), vm_read32(dev + 0x40));
+                }
+            }
             fprintf(stderr, "[dload] submit obj=0x%08X state=%u device=0x%08X "
                             "stop=%u waiter=%u pending=%u\n",
                     a3_, vm_read32(a3_ + 0x8C), dev,
