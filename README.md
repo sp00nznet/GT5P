@@ -201,6 +201,47 @@ symptom rather than the cause, since the runs that get furthest never call them
 at all. Something makes the stuck runs need memory the good ones do not.
 
 
+##### Implemented, And It Did Not Help
+
+Syscall 341 is now implemented, because answering `CELL_OK` to an allocation
+request while allocating nothing is indefensible whatever else is true. The ABI
+was read off the caller rather than a header: `func_00941808` loads `r3` with a
+pointer and `r4` with `0x300000`, issues the syscall, retries on any non-zero
+result, and on success immediately does `lwz r29, 0(r29)` — reading back
+through the pointer it passed. So `r3` receives the address and `r4` is the
+size. 342 follows with the address 341 handed back, and on a flat VM there is
+nothing left for it to do.
+
+It works — four 3 MB allocations a boot, at `0x40100000` upward — and it changed
+nothing:
+
+```
+before   7, 7, 0, 7      files
+after    7, 3, 7, 108, 7 files
+```
+
+The theory it was meant to test is dead, and the way it died is worth keeping.
+The caller is the PDI worker for device `0x20094290` — the packed-filesystem
+device whose loads stall — and the sequence looked damning:
+
+```
+sys_ppu_thread_create tid=11 name="PDI:7ffffffe:20094290"
+lv2_syscall 341   r4=0x300000        <- asks for 3 MB
+lv2_syscall 342   r3=0x0             <- passes on a null handle
+ppu_thread_join(tid=11)
+sys_ppu_thread_exit(tid=11 status=0) <- worker gives up
+```
+
+A worker that asks for memory, gets none and exits, on exactly the device that
+stalls. Except the run that loads 108 assets does the same thing — creates the
+thread, allocates, exits, joins — so that is simply what a short-lived one-shot
+worker looks like, and the resemblance to a failure was entirely in the reading.
+
+Keep the implementation: before it, the title spent the whole boot using three
+megabytes it had never been given, which is latent corruption whether or not it
+is *this* stall. But the stall is still unexplained.
+
+
 A measurement note that cost real time here. The runtime turns verbose logging
 on when stderr is redirected, on the reasoning that a redirected stream means
 someone is capturing a log — and `runtime/ps3_log.h` warns in as many words
