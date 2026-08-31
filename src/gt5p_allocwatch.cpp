@@ -212,10 +212,24 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
                 pth[k] = (c >= 32 && c < 127) ? c : '.';
             }
             pth[k] = 0;
-            fprintf(stderr, "[dload]   path='%s'  +0x90:", pth);
-            for (int q = 0; q < 10; q++)
-                fprintf(stderr, " %08X", vm_read32(a3_ + 0x90 + q * 4));
-            fputc('\n', stderr);
+            /* +0x90 is a std::string header, not inline characters -- +0x9C
+             * holds the data pointer. Follow it, and dump a window of the
+             * object either way so a wrong guess is visible rather than silent
+             * (the first guess printed an empty string and looked like "no
+             * path", which is a different and much more misleading answer). */
+            uint32_t sp = vm_read32(a3_ + 0x9C);
+            char ind[96]; unsigned m = 0;
+            if (sp >= 0x10000u) {
+                for (; m < sizeof ind - 1; m++) {
+                    uint32_t w = vm_read32((sp + m) & ~3u);
+                    char c = (char)((w >> (8 * (3 - ((sp + m) & 3)))) & 0xFF);
+                    if (!c) break;
+                    ind[m] = (c >= 32 && c < 127) ? c : '.';
+                }
+            }
+            ind[m] = 0;
+            fprintf(stderr, "[dload]   inline='%s' ptr=0x%08X -> '%s'\n",
+                    pth, sp, ind);
             fflush(stderr);
     }
 

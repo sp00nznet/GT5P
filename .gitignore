@@ -60,3 +60,6 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 compile_commands.json
+
+# SPU job dumps and held-back images (captured from the game binary)
+analysis/spu/
