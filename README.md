@@ -177,6 +177,43 @@ This is the long-standing heap damage recorded in this document — the allocato
 why the asset count moves around: how far the boot gets depends on when the
 free list is trampled.
 
+#### The free list contains live blocks
+
+Reporting any node whose size exceeds the arena names the bad nodes, and what
+is *in* those size fields is the tell:
+
+```
+[freelist] node=0x200AC930 size=0x42C80000  -- larger than the arena
+[freelist] node=0x2008A06D size=0x6C657665  -- larger than the arena
+[freelist] node=0x200AC9B0 size=0x29EC3940  -- larger than the arena
+```
+
+`0x42C80000` is the `0x42Cxxxxx` value this document has chased for months. It
+was never an address the allocator wandered to — it is a **pointer sitting in a
+size field**. `0x6C657665` is ASCII `"leve"`. `0x29EC3940` points back into the
+arena. And node `0x2008A06D` is not even 4-aligned, so the walk had already
+followed a bad `next` into the middle of something.
+
+Pointing the write watch at one of those nodes settles what it is:
+
+```
+[ww] 0x200AC930 <- 0x0  (w8) guest-fn=0x00A0B970      <- zero-fill
+[ww] 0x200AC930 <- 0x51 (w1) guest-fn=0x00921730
+[ww] 0x200AC931 <- 0xD4 (w1) guest-fn=0x00921730
+```
+
+Ten distinct functions write to that block in one boot — 32 writes from
+`func_00921730` alone, with `func_00A0B970` zero-filling it first. Both are
+exact function starts, so this is not the nearest-preceding attribution the
+write watch usually gives. That block is **ordinary live memory in active use**,
+and the free list points into it.
+
+So this is not a buffer overrun spilling into a neighbouring header. A block is
+on the free list *and* allocated at the same time: a premature free, a double
+free, or a free-list insertion that keeps a node it should have unlinked. The
+size the allocator then reports is whatever the live data happens to look like,
+which is why it differs every run and why the asset count is a spread.
+
 #### What this rules in
 
 The decoder that wrote nearly 4 MB past its 32 KB window would corrupt exactly

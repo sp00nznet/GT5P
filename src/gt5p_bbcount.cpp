@@ -99,3 +99,21 @@ void gt5p_layout(unsigned long long capacity, unsigned long long used)
             rem < 0 ? "   <-- NEGATIVE" : "");
     fflush(stderr);
 }
+
+/* func_00950650 walks the heap free list looking for the largest free block,
+ * reading each node's size from +4 and its successor from +12. One node comes
+ * back carrying a size larger than the whole 182 MB arena, and the title then
+ * asks for that much. Report the first such node: its ADDRESS is what a write
+ * watch needs to catch whoever trampled it. */
+/* C++ linkage to match the block-scope declaration at the call site. */
+void gt5p_freenode(unsigned node, unsigned size)
+{
+    enum { ARENA_LO = 0x20000000u, ARENA_HI = 0x2ADFFF80u };
+    if (size <= (ARENA_HI - ARENA_LO)) return;
+    static int n = 0;
+    if (n++ >= 4) return;
+    fprintf(stderr, "[freelist] node=0x%08X size=0x%08X (%u) -- larger than the arena\n"
+                    "[freelist]   watch it with LBP_WW=0x%08X\n",
+            node, size, size, node + 4);
+    fflush(stderr);
+}
