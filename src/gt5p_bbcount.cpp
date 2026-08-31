@@ -250,3 +250,16 @@ void gt5p_cf080(unsigned r6, unsigned r7, unsigned r8, unsigned r9,
             r6, r7, r8, r9, r10, ret, ret ? "" : "   REJECTED");
     fflush(stderr);
 }
+
+/* Which exit func_006CF080 actually takes. Inferring the condition from the
+ * register names at a branch was wrong once already; this records the block
+ * that is entered instead. */
+extern "C" void gt5p_exit(unsigned addr)
+{
+    static unsigned seen[8], hits[8], n;
+    unsigned i = 0;
+    for (; i < n; i++) if (seen[i] == addr) break;
+    if (i == n && n < 8) { seen[n] = addr; hits[n] = 0; n++; }
+    if (i < 8 && ++hits[i] <= 3)
+        fprintf(stderr, "[exit] func_006CF080 leaves via 0x%08X (hit %u)\n", addr, hits[i]);
+}

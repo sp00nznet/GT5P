@@ -735,10 +735,38 @@ Reading a comparison's register operand and assuming it is still the incoming
 argument is a mistake worth naming, because it is easy to make when skimming a
 291-instruction function for its exits.
 
-So the honest state is: `func_006CF080` returns zero for some calls and a valid
-handle for others with **identical inputs**, and which internal value differs is
-not established. Getting it needs the five exit conditions instrumented where
-they are evaluated, rather than inferred from the register names at the branch.
+Instrumenting the blocks those branches jump to does not isolate it either.
+They fire **several times within a single call**:
+
+```
+[exit] func_006CF080 leaves via 0x006CF3E4 (hit 1)
+[exit] func_006CF080 leaves via 0x006CF46C (hit 1)
+[cf080] ... -> 0x20039780
+[exit] func_006CF080 leaves via 0x006CF3E4 (hit 2)
+[exit] func_006CF080 leaves via 0x006CF3F0 (hit 1)
+[exit] func_006CF080 leaves via 0x006CF4D4 (hit 1)
+[cf080] ... -> 0x20039780
+```
+
+So they are not exits — they are intermediate targets inside the tail, and the
+function loops through them. That is the third structural reading of this one
+function to be wrong: first "gated on the capacity checks", then "gated on
+arguments `r8`/`r10`", now "these blocks are the exits". Each was a reasonable
+inference from a partial disassembly and each was contradicted by the first
+measurement taken against it.
+
+The honest state, and the point at which guessing about this function's control
+flow was abandoned:
+
+- `func_006CF080` returns zero for some calls and a valid handle for others
+  with **identical argument registers** (`r3`-`r10` all the same).
+- Its two capacity checks are not tripped (`1/128`, `4/257`).
+- The branch targets in its tail are reached repeatedly within one call, so the
+  control flow is a loop, not a chain of guarded exits.
+
+Anyone continuing should treat the disassembly of this function as unread
+rather than trusting the three readings above, and should get the control flow
+from a block-hit trace (`scripts/bbcount.py`) before forming a hypothesis.
 
 That is where the trail stops. The remaining question is what initialises that
 registry and when — an ordinary question about the caller's loop, not
