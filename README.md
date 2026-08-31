@@ -118,6 +118,42 @@ correct bound and wrap, every time. So it was never bad input, it was a bad
 return.
 
 
+### Where It Stops Now
+
+Two outcomes, and which one a run gets is a coin toss weighted against us —
+roughly three in four stop at 7 files, the rest reach 108.
+
+The 7-file case is a real deadlock, not slowness: five minutes of wall clock
+produces the same seven files and a 370 KB log, so nothing is even spinning.
+The last thing that happens is a zero-length read into the decoder's input
+buffer, then the SPURS job chain settles into a permanent cycle — the main
+thread receiving job-chain completions on queue 1 with `d2` walking
+0, 2, 4, 6, 8, 0xA, 0xC and never asking for another asset.
+
+What both outcomes now reach, which nothing before this phase did:
+
+- tiled render targets, Zcull, double-buffered display, flip and VBlank
+  handlers all configured;
+- the D3D12 backend fully initialised — adapter, pipeline states for every
+  vertex class, vertex buffer;
+- a continuous SPU job loop, 113,765 dispatches in a 75-second run, zero
+  dispatch misses.
+
+What neither reaches: a second flip. The title prepares exactly one and never
+submits an RSX command buffer, so the FIFO drain has nothing to do and no frame
+is ever presented. The frame loop is the next wall, and it sits behind whatever
+makes the loader stop asking for assets.
+
+A measurement note that cost real time here. The runtime turns verbose logging
+on when stderr is redirected, on the reasoning that a redirected stream means
+someone is capturing a log — and `runtime/ps3_log.h` warns in as many words
+that the per-event lines are emitted from every guest thread through one
+non-fair `FILE` lock, so the logging itself changes what the title does. Every
+measurement through a pipe is therefore taken on a differently-scheduled
+program. Pass `PS3_VERBOSE=0` when the numbers matter. It does not remove the
+7-versus-108 split, so that race is real and not an artefact, but it is the
+difference between a 16 MB log and a 370 KB one.
+
 ## Phase 14 — The Switch Statements Were Invisible
 
 > `find_functions` walks direct branches. A `bctr` through a jump table is a
