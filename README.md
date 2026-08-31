@@ -141,8 +141,28 @@ What both outcomes now reach, which nothing before this phase did:
 
 What neither reaches: a second flip. The title prepares exactly one and never
 submits an RSX command buffer, so the FIFO drain has nothing to do and no frame
-is ever presented. The frame loop is the next wall, and it sits behind whatever
-makes the loader stop asking for assets.
+is ever presented.
+
+It is worth being precise about *why*, because "the FIFO is broken" and "the
+title never started rendering" look identical from a `put` pointer that does not
+move. Under `GCM_DRAINDBG` the control register reads the same in every run,
+including the ones that load 108 assets:
+
+```
+[DRAIN] getoff=00010040 put=00010040 ref=00000000
+```
+
+`put` never leaves the value `cellGcmInit` gave it. But the title *does* call
+`cellGcmGetControlRegister`, exactly once, so it holds the pointer and the path
+to the FIFO is wired end to end — it simply never kicks it. It also never polls
+`cellGcmGetFlipStatus`. That is not a renderer that is failing; it is a renderer
+that has not been asked to do anything yet. The frame loop sits behind whatever
+makes the loader stop, and there is no evidence of a separate RSX defect waiting
+underneath.
+
+The outcomes are also a spectrum rather than a switch — 7, 39 and 108 assets
+have all been observed from the same binary — which fits a race rather than a
+branch.
 
 #### The Stuck Runs Ask lv2 For More Memory
 
