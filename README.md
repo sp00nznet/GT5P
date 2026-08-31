@@ -647,11 +647,35 @@ are pointers into the same static region, so this is a lookup for a *different
 descriptor object*, one of which is not found.
 
 That is a correlated observation rather than an inference, and it replaces the
-"registry not populated" guess that was tested and refuted above. What
-`func_006CF50C` is looking up, and why the object at `0x01079C0C` is missing
-when the one at `0x01079C60` is present, is the next thing to read — and it is
-a lookup failure with two concrete addresses to compare, which is a far better
-starting point than this document had a day ago.
+"registry not populated" guess that was tested and refuted above.
+
+Dumping the two objects identifies them outright. They are tables of
+`{name, image, size}` triplets naming **SCE audio effect modules**:
+
+```
+FAILS    0x01079C0C:  socedmix    @0x00F13500 (0x8E60)
+                      socelverbx  @0x00F42F80 (0x6300)
+                      soceumix    @0x00F1C380 (0x4FE0)
+SUCCEEDS 0x01079C60:  soceamp     @0x00F21380 (0x3610)
+                      socethru    @0x00F2F680 (0x24E0)
+                      soceagc_gt5 @0x00F49300 (0x3860)
+```
+
+Downmix, late reverb and upmix fail; amplifier, passthrough and automatic gain
+control succeed. All six are raw SPU code images present in the ELF — none is
+missing — and `func_006CF50C` forwards to `func_006CF080` with the image pointer
+and a 16-aligned size, so it is an SPU module registration that returns zero for
+three of the six.
+
+The three that fail are the three **largest**, which invites an obvious guess:
+that they are the SPU images this port already holds back because the SPU lifter
+cannot process them, one of which is 36,448 bytes — exactly `socedmix`'s
+`0x8E60`. **That is wrong.** The held images all begin with sixteen zero bytes;
+they are SPURS job LS dumps, while `socedmix` begins `43 F7 3A 02 43 87 A6 82`.
+Same size, different data, and one command to check.
+
+So the next read is `func_006CF080`: why it registers `soceamp`, `socethru` and
+`soceagc_gt5` and rejects `socedmix`, `socelverbx` and `soceumix`.
 
 That is where the trail stops. The remaining question is what initialises that
 registry and when — an ordinary question about the caller's loop, not
