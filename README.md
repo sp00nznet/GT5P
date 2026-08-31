@@ -404,221 +404,49 @@ end. Whatever the measuring pass is actually reading, zero is not the value
 hardware gives it — or the disagreement is somewhere else entirely and the
 uninitialised read is a red herring.
 
-#### The 0x468, reproduced exactly
+#### Retraction: the pass comparison summed unrelated work
 
-Logging every arena reservation and tagging it by pass — the measuring pass
-runs with the arena base still 0, the filling pass with a real base — produces
-the discrepancy this document has quoted for months, to the byte:
-
-```
-measure: 16 calls, total   164 bytes (0xA4)
-fill   : 48 calls, total  1292 bytes (0x50C)
-difference:              1128 bytes (0x468)
-```
-
-And it is not spread across the layout. It localises to one call:
+The analysis in this section built on a two-pass model — one measuring pass over
+the whole layout, then one filling pass — and compared their totals. Interleaving
+the arena log with a shared sequence number shows that model is wrong:
 
 ```
-first size mismatch at call 12: measure size=0, fill size=620
+#1..#10   measure  68, 0, 5, 3, 0, 0, 0, 0      base=0x00000000
+#11..#20  fill     68, 0, 5, 3, 0, 0, 0, 0      base=0x20089C80   <- agrees exactly
+#21..#30  measure  68, 12, 5, 3, 0, 0, 0, 0     base=0x00000000
 ```
 
-620 bytes is the exact size of the call that breaks the free list. The
-measuring pass asks for **nothing** where the filling pass asks for 620, so the
-arena is reserved too small and the fill walks off the end into the heap.
+There are **many independent measure/fill pairs**, one per object, and the
+overwhelming majority agree byte for byte. Summing all the `measure` lines
+against all the `fill` lines compares unrelated work, and the "16 calls versus
+48 calls" figure was an artefact of that plus a 400-line print cap. The sizes
+also differ between runs — one boot shows `620, 141, 9, 10`, another `2220,
+160, 48` — so the specific `0x468` match, striking as it was, cannot carry the
+weight put on it.
 
-This also explains why `GT5P_ARENA_OUTZERO=1` made things measurably worse
-rather than better. The measuring pass skips writing `*out` when the base is 0,
-and the caller computes a later size from that slot — so writing a definite
-**zero** into it does not stabilise the measurement, it *guarantees* the
-size-zero reservation that causes the under-count. The fix was pushing in
-precisely the wrong direction, which the numbers said before the mechanism did.
+What that leaves is narrower and still worth having: **at least one
+measure/fill pair disagrees**, with the measuring side counting 0 where the
+filling side counts 31, and `func_006A4400` demonstrably takes the free list
+from valid to invalid. Finding *which* pair disagrees needs the pairs kept
+separate — matched on the arena context pointer — rather than aggregated, and
+the print cap removed.
 
-What the measuring pass should see in that slot is now the whole question, and
-it is a narrow one: find which caller produces call 12 and what it derives 620
-from. The callers are `func_006C0218`, `func_006C0620` and `func_006C19E0`.
+The measurements that do not depend on this model are unaffected and are listed
+in the next section.
 
-#### Where call 12 comes from
+#### What is directly measured and stands
 
-The guest chain for the 620-byte reservation:
+Independent of any pass model, each of these is a direct observation:
 
-```
-func_00011A28 -> func_00013D10 -> func_00013EF0 -> func_00698B58 -> func_00683B90
-  -> func_006A4E14 -> func_006C5E90 -> func_006C5E60 -> func_006C36E4
-  -> func_006C32A0 -> func_006C2D5C -> [...] -> func_006A4400
-```
-
-Two caveats on that chain, both worth stating. It is a *host* backtrace mapped
-back to guest functions, and one frame is plainly wrong — `func_006C2CC8+0x7F7`
-names a function only `0x94` bytes long, and reading it confirms it never calls
-the arena builder at all. The reliable way to resolve it is to intersect the
-chain with the arena builder's actual callers, which is exact:
-
-```
-callers of func_006A4400 that appear in the chain:
-  func_006C2D5C, func_006C32A0
-```
-
-`func_006C2D5C` is the one to look at first, because it is also the function the
-write watch caught putting float data (`0xC2C0A3D7`, about -96.3) into the
-free-list node's `next` field. It both reserves the arena space and writes
-through it — so the under-measured reservation and the overrun that follows are
-the same function's two halves.
-
-That is the whole handoff: **find why `func_006C2D5C` sizes this reservation at
-0 on the measuring pass and 620 on the filling pass.** Everything upstream and
-downstream of that question is measured and written down.
-
-#### The last link: an enumerator that is empty too early
-
-`func_006C2D5C` computes the reservation size arithmetically, so there is no
-ambiguity about where 620 comes from:
-
-```
-r3 = func_006A3D70(arena_ctx)      ; a count
-r5 = (r3 << 2) + (r3 << 4)         ; = count * 20
-func_006A4400(ctx, out, r5)
-```
-
-`620 / 20 = 31`. So the count is **31 on the filling pass and 0 on the measuring
-pass** — the entire `0x468` discrepancy is `31 * 20 = 620` minus nothing.
-
-`func_006A3D70` is an enumerator:
-
-```
-count = 0
-loop:  item = func_006A3D14(ctx, buf)     ; fetch next entry
-       if (*item == 0 || buf[0] == 0) break
-       count++
-return count
-```
-
-So whatever it walks is **empty when the arena is measured and holds 31 entries
-when the arena is filled**. The layout is sized against an empty collection and
-then written with a full one.
-
-That is the defect, stated as precisely as this project can state it without
-guessing: *why is that collection empty at measure time?* Either something that
-populates it has not run yet on this port when it would have on hardware, or
-`func_006A3D14` fails its first pass here. Both are answerable by instrumenting
-`func_006A3D70` and `func_006A3D14` across the two passes — the same bracketing
-that produced every result above it.
-
-One note for whoever picks this up: this document previously recorded
-`func_006A3D70` as "returns 0 on all 18 calls", which was read at the time as
-the function being broken. It is not broken. It returns 0 *on the measuring
-pass* and a real count on the filling pass, and that difference is the bug
-rather than the zero itself.
-
-#### Root cause: an audio parameter string, empty when the arena is measured
-
-Printing what the enumerator is actually handed answers it outright. The same
-address, twice:
-
-```
-func_006A3D70(obj=0x20085BE0) -> count=0   str=""
-func_006A3D70(obj=0x20085BE0) -> count=31  str="lfe-send, F:0:100, 0, LFE send level
-                                                from main speaker, %.lfe-level, F:0"
-```
-
-It is a comma-separated **audio mixer parameter descriptor** — which matches
-everything around it: the tokens `func_006A3D14` walks begin `"sgx-"`, and the
-title runs a thread named `sgx-audio-thr`.
-
-So the buffer at `0x20085BE0` is **empty when the arena is measured and holds 31
-parameters when the arena is filled**. Nothing about the allocator, the free
-list, the decompressor or the loader is wrong on its own. The layout is sized
-against a string that has not been written yet, and everything else is
-consequence:
-
-```
-0x20085BE0 empty at measure, 31 tokens at fill
-  -> reservation sized 0 instead of 620   (31 * 20)
-  -> arena short by exactly 0x468
-  -> fill overruns into a free-list node; its end pointer becomes garbage
-  -> free-space query reports 2.6 GB; the giant allocation is granted
-  -> arena bookkeeping destroyed; main spins on 264 bytes forever
-  -> the loader is never asked for anything: no assets, no frame, no attract mode
-```
-
-One qualification, because the tempting version of this is stronger than the
-evidence. `0x20085BE0` is a **reused scratch buffer**, not one collection's
-home: across runs the enumerator returns 0, 4, 8, 16 and 31 for that same
-address, and a write watch over its first 16 bytes catches only zero-fill. So
-"empty at measure, 31 at fill" describes one observed pair rather than the
-lifecycle of a single object, and the audio descriptor is what happened to be
-in the buffer at the moment it was sampled.
-
-What is solid, and reproducible on demand, is the pass comparison itself:
-
-```
-measure: 16 calls, total   164 bytes (0xA4)
-fill   : 48 calls, total  1292 bytes (0x50C)
-difference:              1128 bytes (0x468)
-first size mismatch at call 12: measure size=0, fill size=620
-```
-
-The measuring pass walks a *shorter sequence* than the filling pass — 16 calls
-against 48 — which is a stronger statement than any single count: the two
-passes are not disagreeing about one item's size, they are enumerating
-different amounts of work. Call 12 is simply where they first diverge.
-
-Printing both sequences in full says it plainly:
-
-```
-measure (16): [68, 0, 5, 3, 0, 0, 0, 0, 68, 12, 5, 3,   0, 0, 0, 0]
-fill    (48): [68, 0, 5, 3, 0, 0, 0, 0, 68, 12, 5, 3, 620, 9, 10, 7, 7, 10, 141, 11, 15, ...]
-```
-
-The first **twelve reservations are byte-identical**. Then the measuring pass
-emits four zeros and stops, while the filling pass emits thirty-six real
-entries. So the layout has a fixed prefix both passes agree on, followed by a
-variable list that is **empty when measured and holds thirty-six items when
-filled** — and `620 = 31 * 20` is simply the first of them.
-
-That is as far as this goes without new work, and it is a good place to stop
-because the question is now sharp and small:
-
-> **What populates that list, and why does it run between the measuring pass
-> and the filling pass rather than before both?**
-
-Part of that is already answered, and it narrows things usefully. The
-descriptors are **static read-only data in the ELF**, at `0x00F1B9F0`:
-
-```
-lfe-send, F:0:100, 0, LFE send level from main speaker, %
-lfe-level, F:0:100, 100, LFE level, %
-lfe-lp, B, 1, Is use low pass filter
-lfe-fc, I:70:250, 120, LFE Lo pass filter frequency, Hz
-dmix-mode, L:MONO:S...
-```
-
-So nothing *builds* this list at runtime — it is a constant table compiled into
-the binary. But the enumerator is handed `0x20085BE0`, a heap scratch buffer,
-not the ELF address. Something copies descriptor text into scratch and the
-enumerator counts the copy.
-
-That reframes the question a second time, and more helpfully: it is not "what
-populates the list" — the list is a constant. It is **why the copy into scratch
-does not happen on the measuring pass**. The data is always there; only the
-transfer is conditional.
-
-One dead end recorded so it is not repeated. The obvious move is to point the
-write watch at `0x20085BE0` and catch the copy. It does not work: over a full
-run, `LBP_WW=0x20085BE0 LBP_WW_LEN=0x80` catches **44 writes and not one of
-them is non-zero** — only `memset` zero-fill and eight more zeros from
-`func_006C2CC8`. Yet the enumerator has been observed reading populated
-descriptor text at that same address in another run.
-
-The address is a heap scratch buffer and is not stable enough across runs to
-pin a watch to. Catching the copy needs the watch aimed at **the enumerator's
-argument as it is actually passed**, not at a fixed address remembered from an
-earlier boot — which means arming it from inside the probe rather than from the
-environment.
-
-The `[arena]` probe prints the sequences; adding the guest caller to each entry
-identifies the code that walks the list, and a write watch on the list head
-identifies what fills it. Both techniques are already used elsewhere in this
-section and take one run each.
+- `longjmp` lifted as `return`; fixing it moved assets from a deterministic 4
+  to a ceiling of 108, A/B'd over many runs.
+- Main spins forever retrying a 264-byte allocation
+  (`func_00937EF0(size=264) -> 0`, 2000+ consecutive failures).
+- The free-space query returns ~2.6 GB because a free-list node carries an end
+  pointer outside the arena.
+- That giant allocation is granted, returning a pointer outside the arena.
+- `func_006A4400` takes the free list from valid to invalid across a single
+  call, bracketed 0 -> 1 in three consecutive runs.
 
 #### It is not a locking race
 

@@ -191,6 +191,7 @@ static uint32_t gt5p_jt_00918004(uint32_t sel)
 static volatile long g_in_pump;   /* set while func_00013060 runs */
 static volatile long g_in_fsinit; /* set while func_00014B58 runs */
 
+static unsigned g_probe_tick;   /* orders [arena] and [enum] lines */
 static int g_fl_before;   /* free-list state entering a bracketed call */
 
 extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
@@ -205,8 +206,9 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
         unsigned base = vm_read32(a3_);
         static int n = 0;
         if (n++ < 400)
-            fprintf(stderr, "[arena] %s base=0x%08X off=0x%08X size=%u\n",
-                    base ? "fill   " : "measure", base, vm_read32(a3_ + 4), a5_);
+            fprintf(stderr, "[arena] #%u %s base=0x%08X off=0x%08X size=%u\n",
+                    ++g_probe_tick, base ? "fill   " : "measure", base,
+                    vm_read32(a3_ + 4), a5_);
         /* The 620-byte reservation is the one the measuring pass sizes at 0.
          * Name the caller that produces it -- that is where the two passes
          * part company. */
@@ -745,8 +747,8 @@ extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
                   unsigned char c = (unsigned char)((w >> (8*(3-((a3+k)&3)))) & 0xFF);
                   if (!c) break; txt[k] = (c>=32 && c<127) ? (char)c : '.'; }
               txt[k]=0;
-              fprintf(stderr, "[enum] func_006A3D70(obj=0x%08X) -> count=%u  str=\"%s\"\n",
-                      a3, ret, txt); }
+              fprintf(stderr, "[enum] #%u func_006A3D70(obj=0x%08X) -> count=%u  str=\"%s\"\n",
+                      ++g_probe_tick, a3, ret, txt); }
     }
     if (strstr(who, "006A3D14")) {
         static int n = 0;
