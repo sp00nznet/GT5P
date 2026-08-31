@@ -1073,6 +1073,13 @@ difference between a 16 MB log and a 370 KB one.
 > fix. The distribution matches the instrumented builds, so the probes were
 > not shaping the outcome — worth confirming, since nearly every number in
 > this document was taken with instrumentation compiled in.
+>
+> A crash was seen roughly twice in fifteen runs while this was being
+> investigated, and flagged as an open risk against the `longjmp` change since
+> it appeared alongside it. Soaking the clean build clears it: **12 of 12 runs
+> ran to their timeout with no abnormal exit**. The crashes belonged to the
+> instrumented builds — a dozen `instrument_alloc` wrappers, block counters and
+> generated-code edits — not to the fix.
 >                       before        after
 > functions lifted      39,660        40,320
 > spins on queue 0      4,398,000     0
