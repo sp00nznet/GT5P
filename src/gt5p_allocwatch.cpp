@@ -187,6 +187,14 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
     if (strstr(who, "0091B8A8"))
         fprintf(stderr, "[dload] ctor obj=0x%08X\n", a3_);
 
+    /* FileDelayLoad vtable+0x08 is the SUBMIT, called by
+     * func_0091B298 immediately before the wait. Five loads complete
+     * and the sixth does not, so the question is whether the sixth is
+     * even submitted. */
+    if (strstr(who, "0091B780"))
+        fprintf(stderr, "[dload] submit obj=0x%08X state=%u\n",
+                a3_, vm_read32(a3_ + 0x8C));
+
     if (strstr(who, "0091B638")) {
         static int n = 0;
         if (n++ < 12)
@@ -230,6 +238,23 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
             ind[m] = 0;
             fprintf(stderr, "[dload]   inline='%s' ptr=0x%08X -> '%s'\n",
                     pth, sp, ind);
+            /* Two guesses at the request's path field were both wrong (+0x90
+             * inline, +0x9C as a pointer). Stop guessing at the format and ask
+             * who is making the request instead -- the caller names the
+             * subsystem, which is what actually matters. */
+            /* rtti.py's slot mapping put submit at vtable+0x08 = func_0091AE98,
+             * but that function is never called -- so the mapping is wrong
+             * there (thunks and multiple inheritance shift the walk). Read the
+             * slot's target from the live vtable instead of trusting it. */
+            if (strstr(who, "0091BBA8")) {
+                uint32_t vt = vm_read32(a3_);
+                fprintf(stderr, "[dload]   vtable=0x%08X submit=func_%08X "
+                                "wait=func_%08X\n", vt,
+                        vm_read32(vm_read32(vt + 0x08)),
+                        vm_read32(vm_read32(vt + 0x10)));
+            }
+            ppu_guest_callstack(strstr(who, "0091BBA8") ? "dload-wait"
+                                                       : "dload-complete");
             fflush(stderr);
     }
 
