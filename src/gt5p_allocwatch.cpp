@@ -470,7 +470,7 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
      * even submitted. */
     if (strstr(who, "006A3D70")) {
         static int n = 0;
-        if (n++ < 24)
+        if (n++ < 400)
             fprintf(stderr, "[count] func_006A3D70(0x%08X)\n", a3_);
     }
 
@@ -742,7 +742,7 @@ extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
         strstr(who, "006CF6A4") || strstr(who, "006CF57C") ||
         strstr(who, "006CEC74") || strstr(who, "006C5B60")) {
         static int n = 0;
-        if (n++ < 60)
+        if (n++ < 4000)
             fprintf(stderr, "[look] #%u %s(0x%08X, 0x%08X) -> 0x%08X\n",
                     ++g_probe_tick, who, a3, a4, ret);
     }

@@ -224,7 +224,7 @@ extern "C" int gt5p_freelist_bad(unsigned heap)
 void gt5p_descr(unsigned target, unsigned obj, unsigned toc)
 {
     static unsigned n;
-    if (n++ >= 26) return;
+    if (n++ >= 400) return;
     { /* case 8 reads a global registry through the callee TOC:
              *   lwz r9, -27716(r2) ; lwz r3, 6276(r9)
              * Reading it here says whether it is populated at each call. */

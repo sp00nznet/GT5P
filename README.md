@@ -625,11 +625,33 @@ The chain repeats with what look like group tags in the second argument —
 `0x102`, `0x104`, `0x200`, `0x201`, `0x3100` — and in every sample
 `func_006CEC74` returns **0**, so `func_006C5B60` returns 0 as well.
 
-Two things that are *not* established and should not be assumed: whether those
-zero returns correspond to the empty-descriptor calls (the sampling windows for
-`[look]` and `[enum]` did not overlap in this run), and what `func_006CEC74`
-does. Correlating the two probes on the shared tick, which both already carry,
-is the next run to make.
+Correlating the two probes on the shared tick — the run the previous paragraph
+asked for — identifies where they part company:
+
+```
+populated (count=8):
+  #196 func_006CF50C(0x20039780, 0x01079C60) -> 0x20039780     <- succeeds
+  #199 func_006CEC74(0x20039780, 0x00002101) -> 0x40000000
+  #200 func_006C5B60(0x20039780, 0x01079C60) -> 0x40000000
+  #201 enum -> count=8   "mix0, F:-100:100, 0, Channel 0 blend, %..."
+
+empty (count=0):
+  #62  func_006CF50C(0x20039780, 0x01079C0C) -> 0x00000000     <- FAILS
+  #68  enum -> count=0   ""
+```
+
+**`func_006CF50C` is the discriminator.** It returns a valid handle for the
+descriptors that arrive and **zero** for the ones that do not, and the two calls
+differ in their second argument: `0x01079C60` succeeds, `0x01079C0C` fails. Both
+are pointers into the same static region, so this is a lookup for a *different
+descriptor object*, one of which is not found.
+
+That is a correlated observation rather than an inference, and it replaces the
+"registry not populated" guess that was tested and refuted above. What
+`func_006CF50C` is looking up, and why the object at `0x01079C0C` is missing
+when the one at `0x01079C60` is present, is the next thing to read — and it is
+a lookup failure with two concrete addresses to compare, which is a far better
+starting point than this document had a day ago.
 
 That is where the trail stops. The remaining question is what initialises that
 registry and when — an ordinary question about the caller's loop, not
