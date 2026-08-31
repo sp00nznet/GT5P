@@ -175,3 +175,41 @@ extern "C" int gt5p_alloc_owner(unsigned addr, unsigned* out_ptr, unsigned* out_
         }
     return 0;
 }
+
+/* Free-list validator, used to bracket a suspect function.
+ *
+ * The write watch shows func_006A4400 and func_006C2D5C writing float data
+ * into bytes the allocator reads as node linkage, but not whether the block
+ * was on the list at the time -- which is the difference between a
+ * use-after-free and a coincidence. Walking the list before and after a call
+ * settles it: valid going in, broken coming out, and the caller owns it.
+ *
+ * Bucket heads live at heap+16..heap+76 (func_00950650 indexes them with r10
+ * running 76 down to 16 in steps of 4); nodes carry an end pointer at +4 and a
+ * successor at +12. */
+extern "C" unsigned vm_read32(unsigned long long);
+
+static int node_ok(unsigned n, unsigned end, unsigned next)
+{
+    enum { LO = 0x20000000u, HI = 0x2ADFFF80u };
+    if (n & 3) return 0;                         /* nodes are aligned */
+    if (n < LO || n >= HI) return 0;
+    if (end < LO || end > HI || end <= n) return 0;
+    if (next && (next < LO || next >= HI || (next & 3))) return 0;
+    return 1;
+}
+
+extern "C" int gt5p_freelist_bad(unsigned heap)
+{
+    int bad = 0;
+    for (unsigned off = 16; off <= 76; off += 4) {
+        unsigned n = vm_read32(heap + off);
+        for (int hops = 0; n && hops < 4096; hops++) {
+            unsigned end  = vm_read32(n + 4);
+            unsigned next = vm_read32(n + 12);
+            if (!node_ok(n, end, next)) { bad++; break; }
+            n = next;
+        }
+    }
+    return bad;
+}

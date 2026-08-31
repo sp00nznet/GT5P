@@ -318,6 +318,46 @@ the free list at the time*. Establishing the ordering — free, then written, th
 walked — is the next measurement, and it is the one that would turn this from a
 strong association into a cause.
 
+#### func_006A4400 corrupts the free list
+
+Bracketing the suspects with a validator settles the ordering. `gt5p_freelist_bad`
+walks every bucket (`heap+16..heap+76`) following `next` at `+12`, checking each
+node is aligned, inside the arena, and carries an end pointer above itself.
+Called before and after each candidate:
+
+```
+[flcheck] func_006A4400: free-list bad-chains 0 -> 1
+[flcheck] func_006A4400: free-list bad-chains 0 -> 1
+[flcheck] func_006A4400: free-list bad-chains 0 -> 1
+```
+
+Three runs, same result. **The list is intact going into `func_006A4400` and
+broken coming out.** `func_006C2D5C`, the other writer, never trips it.
+
+`func_006A4400` is not a new suspect. It is the arena builder recorded in this
+document long ago for a defect nobody could connect to a symptom: its measuring
+pass and its filling pass disagree by `0x468` bytes, because the measuring pass
+reads back an out-pointer it never wrote and branches on it. `GT5P_ARENA_ZERO=1`
+demonstrates the discrepancy and crashes. That overrun lands in a free-list
+node.
+
+So the chain is closed, and every link was measured rather than inferred:
+
+```
+func_006A4400 overruns its measured extent into a free-list node
+  → the node's end pointer becomes garbage (0x42C80000, ASCII "leve")
+  → func_00950650 reports 2.6 GB free
+  → func_006679A0 asks for the remainder; the allocator grants it
+  → the returned pointer is outside the arena; bookkeeping destroyed
+  → main spins on a 264-byte allocation forever
+  → the loader is never asked for anything -> no assets -> no frame
+```
+
+The fix is to make the two passes agree, which is a bounded piece of work on a
+function this document already describes in detail. That is where the next
+session should start, and unlike everything else tried here it is a *fix*
+rather than another measurement.
+
 #### It is not a locking race
 
 A free list that holds a live block, damaged in a different place every run,

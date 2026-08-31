@@ -191,9 +191,18 @@ static uint32_t gt5p_jt_00918004(uint32_t sel)
 static volatile long g_in_pump;   /* set while func_00013060 runs */
 static volatile long g_in_fsinit; /* set while func_00014B58 runs */
 
+static int g_fl_before;   /* free-list state entering a bracketed call */
+
 extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
                                    uint32_t a4, uint32_t a5_)
 {
+    /* Bracket the suspects: if the free list is intact on entry and broken on
+     * exit, the function between the two checks is the one that broke it. */
+    if (strstr(who, "006A4400") || strstr(who, "006C2D5C")) {
+        extern int gt5p_freelist_bad(unsigned);
+        g_fl_before = gt5p_freelist_bad(0x011806B0u);
+    }
+
     /* Open the bracket-trace window as soon as the drain is entered. */
     /* func_00916DD0 calls slot 5 of the object at handler+12 and then
      * func_00918C48, and it clears that field on the way through -- so read it
@@ -682,6 +691,15 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
 extern "C" void gt5p_alloc_note(const char* who, uint32_t a3, uint32_t a4,
                                 uint32_t a5, uint32_t ret)
 {
+    if (strstr(who, "006A4400") || strstr(who, "006C2D5C")) {
+        extern int gt5p_freelist_bad(unsigned);
+        int after = gt5p_freelist_bad(0x011806B0u);
+        static int n = 0;
+        if (after != g_fl_before && n++ < 8)
+            fprintf(stderr, "[flcheck] %s: free-list bad-chains %d -> %d\n",
+                    who, g_fl_before, after);
+    }
+
     /* func_0094FF30 is the game's allocator, (heap, size, align) -> block.
      *
      * The boot does not stall on I/O. Main parks in func_009F3FF0 retrying a
