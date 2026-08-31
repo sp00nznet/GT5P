@@ -198,6 +198,26 @@ extern "C" uint32_t gt5p_alloc_pre(const char* who, uint32_t a3_,
             fprintf(stderr, "[count] func_006A3D70(0x%08X)\n", a3_);
     }
 
+    /* func_00917380 is the worker step that ends in a completion.
+     * Print which item it takes, to compare against the request that
+     * never completes. */
+    /* func_0091B480(request) is the predicate the completion
+     * dispatcher branches on: zero sends it down a different path and
+     * the request is not completed. Five requests complete and the
+     * sixth does not, so print it per call. */
+    if (strstr(who, "0091B480")) {
+        static int n = 0;
+        if (n++ < 30)
+            fprintf(stderr, "[worker] pred req=0x%08X f64=%u\n",
+                    a3_, vm_read32(a3_ + 0x64));
+    }
+
+    if (strstr(who, "00917380")) {
+        static int n = 0;
+        if (n++ < 30)
+            fprintf(stderr, "[worker] step obj=0x%08X arg=0x%08X\n", a3_, a4);
+    }
+
     if (strstr(who, "0091B780"))
         /* The submit is: lock; if (state) bail; if (!obj->device) { obj->err =
          * 4; error path } else enqueue(device, obj). So the device pointer at
