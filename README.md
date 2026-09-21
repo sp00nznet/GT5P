@@ -1177,7 +1177,7 @@ points at initialisation or teardown order rather than three separate bugs.
 
 A measurement note that cost real time here. The runtime turns verbose logging
 on when stderr is redirected, on the reasoning that a redirected stream means
-someone is capturing a log — and `runtime/ps3_log.h` warns in as many words
+someone is capturing a log — and ps3recomp's `runtime/ps3_log.h` warns in as many words
 that the per-event lines are emitted from every guest thread through one
 non-fair `FILE` lock, so the logging itself changes what the title does. Every
 measurement through a pipe is therefore taken on a differently-scheduled
